@@ -1,3 +1,6 @@
+Texture2D gDiffuseMap : register(t0);
+SamplerState gSampler : register(s0);
+
 cbuffer cbPerObject : register(b0)
 {
     float4x4 mWorldViewProj;
@@ -6,24 +9,25 @@ cbuffer cbPerObject : register(b0)
 struct VSInput
 {
     float3 Pos : POSITION;
-    float4 Color : COLOR;
+    float3 Normal : NORMAL;
+    float2 Tex : TEXCOORD;
 };
 
 struct PSInput
 {
     float4 PosH : SV_POSITION;
-    float4 Color : COLOR;
+    float2 TexC : TEXCOORD;
 };
 
 PSInput VS(VSInput vin)
 {
     PSInput vout;
     vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
-    vout.Color = vin.Color;
+    vout.TexC = vin.Tex;   // ❗ ВАЖНО
     return vout;
 }
 
-float4 PS(PSInput pin) : SV_TARGET
+float4 PS(PSInput pin) : SV_Target
 {
-    return pin.Color;
+    return gDiffuseMap.Sample(gSampler, pin.TexC);
 }

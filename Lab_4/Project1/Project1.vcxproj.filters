@@ -39,9 +39,6 @@
     <ClInclude Include="UploadBuffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="VertexTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="MathHelper.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -52,6 +49,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ThrowIfFailed.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Parser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TgaLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Material.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -77,9 +83,6 @@
     <ClCompile Include="UploadBuffer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="VertexTypes.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="MathHelper.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -92,8 +95,15 @@
     <ClCompile Include="ThrowIfFailed.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Parser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TgaLoader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders.hlsl" />
+    <None Include="sponza.mtl" />
   </ItemGroup>
 </Project>

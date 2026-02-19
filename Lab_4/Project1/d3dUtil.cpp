@@ -36,7 +36,17 @@ namespace d3dUtil
             OutputDebugStringA(errorStr.c_str());
         }
 
-        ThrowIfFailed(hr);
+        if (FAILED(hr))
+        {
+            if (errors)
+            {
+                MessageBoxA(0,
+                    (char*)errors->GetBufferPointer(),
+                    "Shader Compile Error",
+                    MB_OK);
+            }
+            ThrowIfFailed(hr);
+        }
         return byteCode;
     }
 

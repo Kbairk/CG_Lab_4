@@ -15,6 +15,8 @@
 #include <memory>
 #include "MathHelper.h"
 #include <DirectXMath.h>
+#include "Material.h"
+#include "Submesh.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -32,6 +34,7 @@ public:
     virtual bool InitializeApp();
     virtual void Update(const Timer& gt);
     virtual void Draw(const Timer& gt);
+    void BuildObj(const std::string& path);
     virtual void CalculateFrameStats();
 
     // Управление таймером
@@ -51,7 +54,22 @@ public:
     // Обработка клавиатуры
     virtual void OnKeyDown(WPARAM wParam);
 
+    void SetDirectXApp(DirectXApp* app) { dxApp = app; }
+    DirectXApp* GetDirectXApp() const { return dxApp; }
+
 private:
+    std::vector<Submesh> mSubmeshes;
+    std::vector<Material> mMaterials;
+    void CreateTextureFromTGA(
+        const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+
+    DirectXApp* dxApp = nullptr;
+
+    XMFLOAT3 mEyePos = { 0.0f, 5.0f, -15.0f };
+
+    //
+
     Window& window;
 
     // DXGI
@@ -133,6 +151,8 @@ private:
     XMFLOAT4X4 mView = MathHelper::Identity4x4();
     XMFLOAT4X4 mProj = MathHelper::Identity4x4();
 
+    UINT mIndexCount;
+
     // Вспомогательные методы инициализации
     bool CreateDXGIFactory();
     bool GetHardwareAdapter();
@@ -150,8 +170,8 @@ private:
 
     // Методы для геометрии и шейдеров
     void BuildInputLayout();
-    void BuildVertexBuffer();
-    void BuildIndexBuffer();
+    //void BuildVertexBuffer();
+    //void BuildIndexBuffer();
     void BuildShaders();
     void BuildConstantBuffer();
     void BuildRootSignature();

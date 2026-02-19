@@ -5,6 +5,9 @@
 #include "d3dUtil.h"
 #include <string>
 #include <DirectXMath.h>
+#include "Parser.h"
+#include "ThrowIfFailed.h"
+#include "TgaLoader.h"
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -138,7 +141,7 @@ void DirectXApp::OnMouseMove(WPARAM btnState, int x, int y)
         float dy = 0.005f * static_cast<float>(y - mLastMousePos.y);
 
         mRadius += dx - dy;
-        mRadius = MathHelper::Clamp(mRadius, 3.0f, 15.0f);
+        mRadius = MathHelper::Clamp(mRadius, 3.0f, 300.0f);
     }
 
     mLastMousePos.x = x;
@@ -152,7 +155,11 @@ void DirectXApp::BuildInputLayout()
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
           D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
+
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24,
           D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 }
@@ -161,14 +168,14 @@ void DirectXApp::BuildInputLayout()
 void DirectXApp::BuildShaders()
 {
     mvsByteCode = d3dUtil::CompileShader(
-        L"shaders.hlsl",
+        L"../Project1/shaders.hlsl",
         nullptr,
         "VS",
         "vs_5_0"
     );
 
     mpsByteCode = d3dUtil::CompileShader(
-        L"shaders.hlsl",
+        L"../Project1/shaders.hlsl",
         nullptr,
         "PS",
         "ps_5_0"
@@ -214,53 +221,68 @@ void DirectXApp::BuildConstantBuffer()
 // =========== Root Signature ===========
 void DirectXApp::BuildRootSignature()
 {
-    // 1. Диапазон дескрипторов для CBV (Descriptor Table подход)
-    D3D12_DESCRIPTOR_RANGE cbvRange;
+    // ===== CBV range (b0)
+    D3D12_DESCRIPTOR_RANGE cbvRange = {};
     cbvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-    cbvRange.NumDescriptors = 1;           // 1 CBV
-    cbvRange.BaseShaderRegister = 0;       // register(b0)
+    cbvRange.NumDescriptors = 1;
+    cbvRange.BaseShaderRegister = 0;
     cbvRange.RegisterSpace = 0;
     cbvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // 2. Корневой параметр как таблица дескрипторов
-    D3D12_ROOT_PARAMETER slotRootParameter[1];
-    slotRootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    slotRootParameter[0].DescriptorTable.NumDescriptorRanges = 1;
-    slotRootParameter[0].DescriptorTable.pDescriptorRanges = &cbvRange;
-    slotRootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // ===== SRV range (t0)
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // 3. Описание корневой сигнатуры
-    D3D12_ROOT_SIGNATURE_DESC rootSigDesc;
-    rootSigDesc.NumParameters = 1;
-    rootSigDesc.pParameters = slotRootParameter;
-    rootSigDesc.NumStaticSamplers = 0;
-    rootSigDesc.pStaticSamplers = nullptr;
-    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    D3D12_ROOT_PARAMETER rootParameters[2];
 
-    // 4. Сериализация и создание
-    Microsoft::WRL::ComPtr<ID3DBlob> serializedRootSig = nullptr;
-    Microsoft::WRL::ComPtr<ID3DBlob> errorBlob = nullptr;
+    // Slot 0 → CBV
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[0].DescriptorTable.pDescriptorRanges = &cbvRange;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-        &serializedRootSig, &errorBlob);
+    // Slot 1 → SRV
+    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    if (errorBlob) {
-        OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-    }
+    // ===== Static Sampler (s0)
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    if (FAILED(hr)) {
-        MessageBox(NULL, L"Failed to serialize root signature", L"Error", MB_OK);
-        return;
-    }
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 2;
+    rootSigDesc.pParameters = rootParameters;
+    rootSigDesc.NumStaticSamplers = 1;
+    rootSigDesc.pStaticSamplers = &sampler;
+    rootSigDesc.Flags =
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    hr = device->CreateRootSignature(0,
+    ComPtr<ID3DBlob> serializedRootSig = nullptr;
+    ComPtr<ID3DBlob> errorBlob = nullptr;
+
+    ThrowIfFailed(D3D12SerializeRootSignature(
+        &rootSigDesc,
+        D3D_ROOT_SIGNATURE_VERSION_1,
+        serializedRootSig.GetAddressOf(),
+        errorBlob.GetAddressOf()));
+
+    ThrowIfFailed(device->CreateRootSignature(
+        0,
         serializedRootSig->GetBufferPointer(),
         serializedRootSig->GetBufferSize(),
-        IID_PPV_ARGS(&mRootSignature));
-
-    if (SUCCEEDED(hr)) {
-        MessageBox(NULL, L"Root Signature created (Descriptor Table)", L"Info", MB_OK);
-    }
+        IID_PPV_ARGS(&mRootSignature)));
 }
 
 // =========== PSO (Pipeline State Object) ===========
@@ -382,187 +404,91 @@ void DirectXApp::BuildWireframePSO()
 
     MessageBox(NULL, L"Wireframe PSO created successfully", L"Info", MB_OK);
 }
-
-// =========== Вершинный буфер ===========
-void DirectXApp::BuildVertexBuffer()
-{
-    const UINT64 vbByteSize = cubeVertexCount * sizeof(Vertex);
-
-    // 1. Буфер в DEFAULT куче
-    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
-    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    D3D12_RESOURCE_DESC bufferDesc = {};
-    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = vbByteSize;
-    bufferDesc.Height = 1;
-    bufferDesc.DepthOrArraySize = 1;
-    bufferDesc.MipLevels = 1;
-    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    bufferDesc.SampleDesc.Count = 1;
-    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    HRESULT hr = device->CreateCommittedResource(
-        &defaultHeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &bufferDesc,
-        D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(&mVertexBufferGPU)
-    );
-
-    if (FAILED(hr)) {
-        MessageBox(NULL, L"Failed to create vertex buffer", L"Error", MB_OK);
-        return;
-    }
-
-    // 2. UPLOAD буфер
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    hr = device->CreateCommittedResource(
-        &uploadHeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&mVertexBufferUploader)
-    );
-
-    if (FAILED(hr)) {
-        MessageBox(NULL, L"Failed to create upload buffer", L"Error", MB_OK);
-        return;
-    }
-
-    // 3. Копирование данных
-    mDirectCmdListAlloc->Reset();
-    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
-
-    // Барьер: COMMON -> COPY_DEST
-    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-        mVertexBufferGPU.Get(),
-        D3D12_RESOURCE_STATE_COMMON,
-        D3D12_RESOURCE_STATE_COPY_DEST);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    // Копируем данные
-    BYTE* pData = nullptr;
-    mVertexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
-    memcpy(pData, cubeVertices, vbByteSize);
-    mVertexBufferUploader->Unmap(0, nullptr);
-
-    mCommandList->CopyResource(mVertexBufferGPU.Get(), mVertexBufferUploader.Get());
-
-    // Барьер: COPY_DEST -> COMMON
-    barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-        mVertexBufferGPU.Get(),
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_COMMON);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    mCommandList->Close();
-    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
-    FlushCommandQueue();
-
-    // 4. Vertex Buffer View
-    mVertexBufferView.BufferLocation = mVertexBufferGPU->GetGPUVirtualAddress();
-    mVertexBufferView.SizeInBytes = vbByteSize;
-    mVertexBufferView.StrideInBytes = sizeof(Vertex);
-}
-
-// =========== Индексный буфер ===========
-void DirectXApp::BuildIndexBuffer()
-{
-    const UINT64 ibByteSize = cubeIndexCount * sizeof(std::uint16_t);
-
-    // 1. Буфер в DEFAULT куче
-    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
-    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    D3D12_RESOURCE_DESC bufferDesc = {};
-    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = ibByteSize;
-    bufferDesc.Height = 1;
-    bufferDesc.DepthOrArraySize = 1;
-    bufferDesc.MipLevels = 1;
-    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    bufferDesc.SampleDesc.Count = 1;
-    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    HRESULT hr = device->CreateCommittedResource(
-        &defaultHeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &bufferDesc,
-        D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(&mIndexBufferGPU)
-    );
-
-    if (FAILED(hr)) {
-        MessageBox(NULL, L"Failed to create index buffer", L"Error", MB_OK);
-        return;
-    }
-
-    // 2. UPLOAD буфер
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    hr = device->CreateCommittedResource(
-        &uploadHeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&mIndexBufferUploader)
-    );
-
-    if (FAILED(hr)) {
-        MessageBox(NULL, L"Failed to create index upload buffer", L"Error", MB_OK);
-        return;
-    }
-
-    // 3. Копирование данных
-    mDirectCmdListAlloc->Reset();
-    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
-
-    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-        mIndexBufferGPU.Get(),
-        D3D12_RESOURCE_STATE_COMMON,
-        D3D12_RESOURCE_STATE_COPY_DEST);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    BYTE* pData = nullptr;
-    mIndexBufferUploader->Map(0, nullptr, reinterpret_cast<void**>(&pData));
-    memcpy(pData, cubeIndices, ibByteSize);
-    mIndexBufferUploader->Unmap(0, nullptr);
-
-    mCommandList->CopyResource(mIndexBufferGPU.Get(), mIndexBufferUploader.Get());
-
-    barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-        mIndexBufferGPU.Get(),
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_COMMON);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    mCommandList->Close();
-    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
-    mCommandQueue->ExecuteCommandLists(1, cmdLists);
-    FlushCommandQueue();
-
-    // 4. Index Buffer View
-    mIndexBufferView.BufferLocation = mIndexBufferGPU->GetGPUVirtualAddress();
-    mIndexBufferView.SizeInBytes = ibByteSize;
-    mIndexBufferView.Format = DXGI_FORMAT_R16_UINT;
-
-    MessageBox(NULL, L"Index buffer created", L"Info", MB_OK);
-}
-
 // =========== Остальные методы ===========
+void DirectXApp::BuildObj(const std::string& path)
+{
+    MessageBoxA(nullptr, "BuildObj called", "DEBUG", MB_OK);
+
+    // Очистить старые данные
+    mSubmeshes.clear();
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+
+    // Загружаем OBJ с сабмешами
+    if (!LoadOBJ(path, vertices, indices, mSubmeshes))
+    {
+        MessageBoxA(nullptr, "Failed to load OBJ", "Error", MB_OK);
+        return;
+    }
+
+    mIndexCount = static_cast<UINT>(indices.size());
+
+    UINT vbByteSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
+    UINT ibByteSize = static_cast<UINT>(indices.size() * sizeof(uint32_t));
+
+    // ====================================================
+    //                VERTEX BUFFER
+    // ====================================================
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC vbDesc = {};
+    vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    vbDesc.Width = vbByteSize;
+    vbDesc.Height = 1;
+    vbDesc.DepthOrArraySize = 1;
+    vbDesc.MipLevels = 1;
+    vbDesc.SampleDesc.Count = 1;
+    vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &vbDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&mVertexBufferGPU)));
+
+    void* mappedData = nullptr;
+    mVertexBufferGPU->Map(0, nullptr, &mappedData);
+    memcpy(mappedData, vertices.data(), vbByteSize);
+    mVertexBufferGPU->Unmap(0, nullptr);
+
+    mVertexBufferView.BufferLocation = mVertexBufferGPU->GetGPUVirtualAddress();
+    mVertexBufferView.StrideInBytes = sizeof(Vertex);
+    mVertexBufferView.SizeInBytes = vbByteSize;
+
+    // ====================================================
+    //                INDEX BUFFER
+    // ====================================================
+
+    D3D12_RESOURCE_DESC ibDesc = {};
+    ibDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ibDesc.Width = ibByteSize;
+    ibDesc.Height = 1;
+    ibDesc.DepthOrArraySize = 1;
+    ibDesc.MipLevels = 1;
+    ibDesc.SampleDesc.Count = 1;
+    ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &ibDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&mIndexBufferGPU)));
+
+    mIndexBufferGPU->Map(0, nullptr, &mappedData);
+    memcpy(mappedData, indices.data(), ibByteSize);
+    mIndexBufferGPU->Unmap(0, nullptr);
+
+    mIndexBufferView.BufferLocation = mIndexBufferGPU->GetGPUVirtualAddress();
+    mIndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+    mIndexBufferView.SizeInBytes = ibByteSize;
+}
 
 void DirectXApp::Shutdown() {
     FlushCommandQueue();
@@ -789,7 +715,7 @@ bool DirectXApp::CreateDescriptorHeaps() {
 
     // 3. CBV/SRV/UAV куча
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NumDescriptors = 1;  // Один CBV
+    cbvHeapDesc.NumDescriptors = 1 + 200; // 1 CBV + 1 SRV
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
@@ -884,6 +810,15 @@ void DirectXApp::SetViewportAndScissor() {
 }
 
 bool DirectXApp::Initialize() {
+    #if defined(_DEBUG)
+        {
+            ComPtr<ID3D12Debug> debugController;
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
+            {
+                debugController->EnableDebugLayer();
+            }
+        }
+    #endif
     MessageBox(NULL, L"Starting DirectX 12 initialization...", L"Info", MB_OK);
 
     // Основные этапы инициализации
@@ -901,12 +836,49 @@ bool DirectXApp::Initialize() {
 
     CreateViewportAndScissor();
 
-    // Геометрия и ресурсы
+   //Геометрия и ресурсы
     BuildInputLayout();
-    BuildVertexBuffer();
-    BuildIndexBuffer();
-    BuildShaders();
+   //BuildVertexBuffer();
+   //BuildIndexBuffer();
+    BuildObj("../Project1/sponza.obj");
+    std::vector<ParsedMaterial> parsed;
+    LoadMTL("../Project1/sponza.mtl", parsed);
+
+    UINT srvIndex = 0;
+
+    for (auto& p : parsed)
+    {
+        if (p.DiffuseMap.empty())
+            continue;
+        Material mat;
+        mat.Name = p.Name;
+        mat.DiffuseMap = p.DiffuseMap;
+        mat.SrvHeapIndex = srvIndex++;
+
+        CreateTextureFromTGA(
+            "../Project1/" + p.DiffuseMap,
+            mat.DiffuseTexture);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE hDescriptor =
+            mCbvHeap->GetCPUDescriptorHandleForHeapStart();
+
+        hDescriptor.ptr += (1 + mat.SrvHeapIndex) * mCbvSrvUavDescriptorSize;
+
+        device->CreateShaderResourceView(
+            mat.DiffuseTexture.Get(),
+            &srvDesc,
+            hDescriptor);
+
+        mMaterials.push_back(mat);
+    }
     BuildRootSignature();
+    BuildShaders();
     BuildPSO();
     BuildWireframePSO();  // Создаем второй PSO для проволочного каркаса
     BuildConstantBuffer();
@@ -1004,102 +976,341 @@ void DirectXApp::CalculateFrameStats() {
 
 void DirectXApp::Update(const Timer& gt)
 {
-    // 1. ПРОСТАЯ КАМЕРА (смотрит на куб сбоку)
-    XMVECTOR pos = XMVectorSet(5.0f, 5.0f, -10.0f, 1.0f);   // Камера сверху-сбоку
-    XMVECTOR target = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);  // Смотрим в центр куба
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);      // Верх = ось Y
+    float speed = 20.0f;
+
+    // ===== ДВИЖЕНИЕ =====
+    if (GetAsyncKeyState('W') & 0x8000)
+        mEyePos.z += speed * gt.DeltaTime();
+
+    if (GetAsyncKeyState('S') & 0x8000)
+        mEyePos.z -= speed * gt.DeltaTime();
+
+    if (GetAsyncKeyState('A') & 0x8000)
+        mEyePos.x -= speed * gt.DeltaTime();
+
+    if (GetAsyncKeyState('D') & 0x8000)
+        mEyePos.x += speed * gt.DeltaTime();
+
+    if (GetAsyncKeyState(VK_SPACE) & 0x8000)
+        mEyePos.y += speed * gt.DeltaTime();
+
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+        mEyePos.y -= speed * gt.DeltaTime();
+
+
+    // ===== КАМЕРА =====
+    XMVECTOR pos = XMLoadFloat3(&mEyePos);
+
+    // Смотрим вперед по Z
+    XMVECTOR target = XMVectorSet(
+        mEyePos.x,
+        mEyePos.y,
+        mEyePos.z + 1.0f,
+        1.0f
+    );
+
+    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 
     XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
     XMStoreFloat4x4(&mView, view);
 
-    // 2. ПЕРСПЕКТИВНАЯ проекция
+
+    // ===== ПРОЕКЦИЯ =====
     XMMATRIX proj = XMMatrixPerspectiveFovLH(
-        XM_PIDIV4,  // 45°
+        XM_PIDIV4,
         (float)mClientWidth / (float)mClientHeight,
-        0.1f,       // БЛИЖЕ! (0.1 вместо 1.0)
-        100.0f      // ДАЛЬНЯЯ
+        0.1f,
+        1000.0f
     );
     XMStoreFloat4x4(&mProj, proj);
 
-    // 3. Обновляем константный буфер
-    XMMATRIX world = XMLoadFloat4x4(&mWorld);
+
+    // ===== WVP =====
+    XMMATRIX world = XMMatrixIdentity();
     XMMATRIX worldViewProj = world * view * proj;
 
     ObjectConstants objConstants;
-    XMStoreFloat4x4(&objConstants.mWorldViewProj, XMMatrixTranspose(worldViewProj));
+    XMStoreFloat4x4(&objConstants.mWorldViewProj,
+        XMMatrixTranspose(worldViewProj));
 
-    if (mObjectCB)
-        mObjectCB->CopyData(0, objConstants);
+    mObjectCB->CopyData(0, objConstants);
 }
 
-void DirectXApp::Draw(const Timer& gt) {
-    // 1. Подготовка команд
-    mDirectCmdListAlloc->Reset();
-    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+void DirectXApp::Draw(const Timer& gt)
+{
+    if (mIndexCount == 0)
+        return;
 
-    // 2. Барьер: PRESENT -> RENDER_TARGET
-    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-        CurrentBackBuffer(),
-        D3D12_RESOURCE_STATE_PRESENT,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mDirectCmdListAlloc->Reset();
+
+    if (mWireframeMode)
+        mCommandList->Reset(mDirectCmdListAlloc.Get(), mWireframePSO.Get());
+    else
+        mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get());
+
+    D3D12_RESOURCE_BARRIER barrier =
+        CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
+            CurrentBackBuffer(),
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+
     mCommandList->ResourceBarrier(1, &barrier);
 
-    // 3. Устанавливаем состояние пайплайна
     SetViewportAndScissor();
 
-    // 4. Очистка буферов
     const float clearColor[] = { 0.69f, 0.77f, 0.87f, 1.0f };
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CurrentBackBufferView();
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = mDsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    auto rtvHandle = CurrentBackBufferView();
+    auto dsvHandle = mDsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    mCommandList->ClearDepthStencilView(dsvHandle,
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+    mCommandList->ClearDepthStencilView(
+        dsvHandle,
+        D3D12_CLEAR_FLAG_DEPTH,
+        1.0f,
+        0,
+        0,
+        nullptr);
 
-    // 5. Устанавливаем render targets
     mCommandList->OMSetRenderTargets(1, &rtvHandle, true, &dsvHandle);
 
-    // 6. Устанавливаем корневую сигнатуру и кучу дескрипторов
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
-    mCommandList->SetDescriptorHeaps(1, descriptorHeaps);
 
-    // 7. Устанавливаем PSO (как на слайде 20.26.59 - переключение PSO)
-    if (mWireframeMode) {
-        mCommandList->SetPipelineState(mWireframePSO.Get());  // Проволочный каркас
-    }
-    else {
-        mCommandList->SetPipelineState(mPSO.Get());  // Сплошная заливка
-    }
+    ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get() };
+    mCommandList->SetDescriptorHeaps(1, heaps);
 
-    // 8. Устанавливаем таблицу дескрипторов
-    D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-    mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+    // CBV (b0)
+    mCommandList->SetGraphicsRootDescriptorTable(
+        0,
+        mCbvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    // 9. Устанавливаем геометрию
+    // SRV (t0)
+    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
+        mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+
+    srvHandle.ptr += mCbvSrvUavDescriptorSize; // второй дескриптор (после CBV)
+
+    mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
     mCommandList->IASetIndexBuffer(&mIndexBufferView);
 
-    // 10. Рисуем куб
-    mCommandList->DrawIndexedInstanced(cubeIndexCount, 1, 0, 0, 0);
+    for (auto& sm : mSubmeshes)
+    {
+        // 🔎 Найти материал
+        Material* mat = nullptr;
 
-    // 11. Барьер: RENDER_TARGET -> PRESENT
-    barrier = CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-        CurrentBackBuffer(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT);
+        for (auto& m : mMaterials)
+        {
+            if (m.Name == sm.MaterialName)
+            {
+                mat = &m;
+                break;
+            }
+        }
+
+        if (!mat)
+            continue;
+        if (mat->DiffuseMap.empty())
+            continue;
+
+        // 📌 Установить SRV конкретного материала
+        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
+            mCbvHeap->GetGPUDescriptorHandleForHeapStart();
+
+        srvHandle.ptr += (1 + mat->SrvHeapIndex) * mCbvSrvUavDescriptorSize;
+
+        mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+
+        // 🎨 Нарисовать только этот submesh
+        mCommandList->DrawIndexedInstanced(
+            sm.IndexCount,
+            1,
+            sm.IndexStart,
+            0,
+            0);
+    }
+
+    // === PRESENT ===
+
+    barrier =
+        CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
+            CurrentBackBuffer(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT);
+
     mCommandList->ResourceBarrier(1, &barrier);
 
-    // 12. Завершаем команды
     mCommandList->Close();
+
     ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
     mCommandQueue->ExecuteCommandLists(1, cmdLists);
 
-    // 13. Презентация
     mSwapChain->Present(0, 0);
     mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
 
-    // 14. Ожидание
+    FlushCommandQueue();
+}
+
+void DirectXApp::CreateTextureFromTGA(
+        const std::string & path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>&texture)
+{
+    MessageBoxA(nullptr, path.c_str(), "Trying to load", MB_OK);
+    TgaImage image;
+    if (!LoadTGA(path, image))
+    {
+        MessageBoxA(nullptr, "Failed to load TGA", "Error", MB_OK);
+        return;
+    }
+
+    // ===== FIX RGB → RGBA =====
+    UINT pixelSize = image.data.size() / (image.width * image.height);
+
+    if (pixelSize == 3)
+    {
+        std::vector<uint8_t> converted;
+        converted.resize(image.width * image.height * 4);
+
+        for (UINT i = 0; i < image.width * image.height; i++)
+        {
+            converted[i * 4 + 0] = image.data[i * 3 + 0];
+            converted[i * 4 + 1] = image.data[i * 3 + 1];
+            converted[i * 4 + 2] = image.data[i * 3 + 2];
+            converted[i * 4 + 3] = 255; // alpha
+        }
+
+        image.data = std::move(converted);
+    }
+
+    UINT expected = image.width * image.height * 4;
+
+    // ===== TEXTURE RESOURCE =====
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = image.width;
+    texDesc.Height = image.height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&texture)));
+
+    // ===== UPLOAD BUFFER =====
+
+    UINT64 uploadBufferSize;
+    device->GetCopyableFootprints(
+        &texDesc,
+        0,
+        1,
+        0,
+        nullptr,
+        nullptr,
+        nullptr,
+        &uploadBufferSize);
+
+    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = uploadBufferSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.SampleDesc.Count = 1;
+
+    ComPtr<ID3D12Resource> uploadBuffer;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &uploadHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&uploadBuffer)));
+
+    // ===== COPY DATA =====
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = texture.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = uploadBuffer.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+
+    UINT64 totalBytes = 0;
+
+    device->GetCopyableFootprints(
+        &texDesc,
+        0,
+        1,
+        0,
+        &src.PlacedFootprint,
+        nullptr,
+        nullptr,
+        &totalBytes);
+
+    // ---- MAP ----
+    void* mappedData = nullptr;
+    uploadBuffer->Map(0, nullptr, &mappedData);
+
+    BYTE* dest = reinterpret_cast<BYTE*>(mappedData);
+    BYTE* srcData = image.data.data();
+
+    UINT rowPitch = src.PlacedFootprint.Footprint.RowPitch;
+    UINT srcRowSize = image.width * pixelSize;
+
+    for (UINT y = 0; y < image.height; y++)
+    {
+        memcpy(
+            dest + y * rowPitch,
+            srcData + y * srcRowSize,
+            srcRowSize
+        );
+    }
+
+    uploadBuffer->Unmap(0, nullptr);
+
+    // ---- COPY ----
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+
+    mCommandList->CopyTextureRegion(
+        &dst,
+        0, 0, 0,
+        &src,
+        nullptr);
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = texture.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(1, cmdLists);
+
     FlushCommandQueue();
 }
