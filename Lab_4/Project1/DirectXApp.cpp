@@ -1178,10 +1178,12 @@ void DirectXApp::CreateTextureFromTGA(
             converted[i * 4 + 0] = image.data[i * 3 + 0];
             converted[i * 4 + 1] = image.data[i * 3 + 1];
             converted[i * 4 + 2] = image.data[i * 3 + 2];
-            converted[i * 4 + 3] = 255; // alpha
+            converted[i * 4 + 3] = 255;
         }
 
         image.data = std::move(converted);
+
+        pixelSize = 4;
     }
 
     UINT expected = image.width * image.height * 4;
