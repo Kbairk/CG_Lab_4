@@ -17,6 +17,7 @@
 #include <DirectXMath.h>
 #include "Material.h"
 #include "Submesh.h"
+#include "ThrowIfFailed.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -58,6 +59,9 @@ public:
     DirectXApp* GetDirectXApp() const { return dxApp; }
 
 private:
+    float mYaw = 0.0f;
+    float mPitch = 0.0f;
+
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
     void CreateTextureFromTGA(
@@ -177,6 +181,9 @@ private:
     void BuildRootSignature();
     void BuildPSO();
     void BuildWireframePSO();  // Новый метод для создания проволочного PSO
+    void CreateColorTexture(
+        const DirectX::XMFLOAT3& color,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
 
     // Методы для доступа к ресурсам
     ID3D12Resource* CurrentBackBuffer() const;

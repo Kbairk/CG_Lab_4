@@ -29,5 +29,10 @@ PSInput VS(VSInput vin)
 
 float4 PS(PSInput pin) : SV_Target
 {
-    return gDiffuseMap.Sample(gSampler, pin.TexC);
+    float4 tex = gDiffuseMap.Sample(gSampler, pin.TexC);
+
+    // Отбрасываем полностью прозрачные пиксели
+    clip(tex.a - 0.05f);
+
+    return tex;
 }

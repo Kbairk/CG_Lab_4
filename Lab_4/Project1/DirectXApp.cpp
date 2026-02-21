@@ -115,7 +115,8 @@ void DirectXApp::OnMouseDown(WPARAM btnState, int x, int y)
 {
     mLastMousePos.x = x;
     mLastMousePos.y = y;
-    SetCapture(window.GetHandle());
+
+    SetCapture(window.GetHwnd()); // захват мыши
 }
 
 void DirectXApp::OnMouseUp(WPARAM btnState, int x, int y)
@@ -125,23 +126,22 @@ void DirectXApp::OnMouseUp(WPARAM btnState, int x, int y)
 
 void DirectXApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
-    if ((btnState & MK_LBUTTON) != 0)
+    if (btnState & MK_LBUTTON)
     {
-        float dx = XMConvertToRadians(0.25f * static_cast<float>(x - mLastMousePos.x));
-        float dy = XMConvertToRadians(0.25f * static_cast<float>(y - mLastMousePos.y));
+        float sensitivity = 0.005f;
 
-        mTheta += dx;
-        mPhi += dy;
+        float dx = (x - mLastMousePos.x) * sensitivity;
+        float dy = (y - mLastMousePos.y) * sensitivity;
 
-        mPhi = MathHelper::Clamp(mPhi, 0.1f, XM_PI - 0.1f);
-    }
-    else if ((btnState & MK_RBUTTON) != 0)
-    {
-        float dx = 0.005f * static_cast<float>(x - mLastMousePos.x);
-        float dy = 0.005f * static_cast<float>(y - mLastMousePos.y);
+        mYaw += dx;
+        mPitch += dy;
 
-        mRadius += dx - dy;
-        mRadius = MathHelper::Clamp(mRadius, 3.0f, 300.0f);
+        // ограничение чтобы не переворачивалась
+        if (mPitch > XM_PIDIV2 - 0.1f)
+            mPitch = XM_PIDIV2 - 0.1f;
+
+        if (mPitch < -XM_PIDIV2 + 0.1f)
+            mPitch = -XM_PIDIV2 + 0.1f;
     }
 
     mLastMousePos.x = x;
@@ -309,9 +309,31 @@ void DirectXApp::BuildPSO()
     psoDesc.pRootSignature = mRootSignature.Get();
 
     // 4. Растеризатор (используем CD3DX12_RASTERIZER_DESC как на слайде)
+    D3D12_RASTERIZER_DESC rasterDesc = {};
+    rasterDesc.FillMode = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    rasterDesc.DepthClipEnable = TRUE;
+
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 
     // 5. Blend State (как на слайде)
+    D3D12_BLEND_DESC blendDesc = {};
+    blendDesc.AlphaToCoverageEnable = FALSE;
+    blendDesc.IndependentBlendEnable = FALSE;
+
+    auto& rtBlend = blendDesc.RenderTarget[0];
+    rtBlend.BlendEnable = TRUE;
+    rtBlend.LogicOpEnable = FALSE;
+    rtBlend.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    rtBlend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rtBlend.BlendOp = D3D12_BLEND_OP_ADD;
+    rtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+    rtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 
     // 6. Depth/Stencil State (как на слайде)
@@ -848,20 +870,24 @@ bool DirectXApp::Initialize() {
 
     for (auto& p : parsed)
     {
-        if (p.DiffuseMap.empty())
-            continue;
         Material mat;
         mat.Name = p.Name;
-        mat.DiffuseMap = p.DiffuseMap;
         mat.SrvHeapIndex = srvIndex++;
 
-        CreateTextureFromTGA(
-            "../Project1/" + p.DiffuseMap,
-            mat.DiffuseTexture);
+        if (!p.DiffuseMap.empty())
+        {
+            CreateTextureFromTGA(
+                "../Project1/" + p.DiffuseMap,
+                mat.DiffuseTexture);
+        }
+        else
+        {
+            CreateColorTexture(p.Kd, mat.DiffuseTexture);
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
 
@@ -880,7 +906,7 @@ bool DirectXApp::Initialize() {
     BuildRootSignature();
     BuildShaders();
     BuildPSO();
-    BuildWireframePSO();  // Создаем второй PSO для проволочного каркаса
+    BuildWireframePSO();  
     BuildConstantBuffer();
 
     // Инициализация проекционной матрицы
@@ -976,54 +1002,63 @@ void DirectXApp::CalculateFrameStats() {
 
 void DirectXApp::Update(const Timer& gt)
 {
-    float speed = 20.0f;
+    float dt = gt.DeltaTime();
+    float speed = 50.0f;
 
-    // ===== ДВИЖЕНИЕ =====
-    if (GetAsyncKeyState('W') & 0x8000)
-        mEyePos.z += speed * gt.DeltaTime();
+    // ===== Forward Vector =====
+    XMFLOAT3 forward =
+    {
+        cosf(mPitch) * cosf(mYaw),
+        sinf(mPitch),
+        cosf(mPitch) * sinf(mYaw)
+    };
 
-    if (GetAsyncKeyState('S') & 0x8000)
-        mEyePos.z -= speed * gt.DeltaTime();
+    XMVECTOR forwardVec = XMLoadFloat3(&forward);
+    forwardVec = XMVector3Normalize(forwardVec);
 
-    if (GetAsyncKeyState('A') & 0x8000)
-        mEyePos.x -= speed * gt.DeltaTime();
+    XMVECTOR rightVec = XMVector3Normalize(
+        XMVector3Cross(
+            XMVectorSet(0, 1, 0, 0),
+            forwardVec));
 
-    if (GetAsyncKeyState('D') & 0x8000)
-        mEyePos.x += speed * gt.DeltaTime();
-
-    if (GetAsyncKeyState(VK_SPACE) & 0x8000)
-        mEyePos.y += speed * gt.DeltaTime();
-
-    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
-        mEyePos.y -= speed * gt.DeltaTime();
-
-
-    // ===== КАМЕРА =====
+    // ===== Movement =====
     XMVECTOR pos = XMLoadFloat3(&mEyePos);
 
-    // Смотрим вперед по Z
-    XMVECTOR target = XMVectorSet(
-        mEyePos.x,
-        mEyePos.y,
-        mEyePos.z + 1.0f,
-        1.0f
-    );
+    if (GetAsyncKeyState('W') & 0x8000)
+        pos += forwardVec * speed * dt;
 
+    if (GetAsyncKeyState('S') & 0x8000)
+        pos -= forwardVec * speed * dt;
+
+    if (GetAsyncKeyState('A') & 0x8000)
+        pos -= rightVec * speed * dt;
+
+    if (GetAsyncKeyState('D') & 0x8000)
+        pos += rightVec * speed * dt;
+
+    if (GetAsyncKeyState(VK_SPACE) & 0x8000)
+        pos += XMVectorSet(0, 1, 0, 0) * speed * dt;
+
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+        pos -= XMVectorSet(0, 1, 0, 0) * speed * dt;
+
+    XMStoreFloat3(&mEyePos, pos);
+
+    // ===== View Matrix =====
+    XMVECTOR target = pos + forwardVec;
     XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 
     XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
     XMStoreFloat4x4(&mView, view);
 
-
-    // ===== ПРОЕКЦИЯ =====
+    // ===== Projection =====
     XMMATRIX proj = XMMatrixPerspectiveFovLH(
         XM_PIDIV4,
         (float)mClientWidth / (float)mClientHeight,
         0.1f,
-        1000.0f
-    );
-    XMStoreFloat4x4(&mProj, proj);
+        1000.0f);
 
+    XMStoreFloat4x4(&mProj, proj);
 
     // ===== WVP =====
     XMMATRIX world = XMMatrixIdentity();
@@ -1058,7 +1093,7 @@ void DirectXApp::Draw(const Timer& gt)
 
     SetViewportAndScissor();
 
-    const float clearColor[] = { 0.69f, 0.77f, 0.87f, 1.0f };
+    const float clearColor[] = { 1.0f, 0.0f, 1.0f, 1.0f };
 
     auto rtvHandle = CurrentBackBufferView();
     auto dsvHandle = mDsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1084,14 +1119,6 @@ void DirectXApp::Draw(const Timer& gt)
         0,
         mCbvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    // SRV (t0)
-    D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
-        mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-
-    srvHandle.ptr += mCbvSrvUavDescriptorSize; // второй дескриптор (после CBV)
-
-    mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
-
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
     mCommandList->IASetIndexBuffer(&mIndexBufferView);
@@ -1111,9 +1138,15 @@ void DirectXApp::Draw(const Timer& gt)
         }
 
         if (!mat)
+        {
+            MessageBoxA(nullptr, sm.MaterialName.c_str(), "Missing Material", MB_OK);
             continue;
-        if (mat->DiffuseMap.empty())
-            continue;
+        }
+
+        //if (mat->DiffuseMap.empty())
+        //{
+        //    MessageBoxA(nullptr, mat->Name.c_str(), "NO TEXTURE", MB_OK);
+        //}
 
         // 📌 Установить SRV конкретного материала
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
@@ -1154,15 +1187,13 @@ void DirectXApp::Draw(const Timer& gt)
 }
 
 void DirectXApp::CreateTextureFromTGA(
-        const std::string & path,
-        Microsoft::WRL::ComPtr<ID3D12Resource>&texture)
+    const std::string& path,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
 {
-    MessageBoxA(nullptr, path.c_str(), "Trying to load", MB_OK);
     TgaImage image;
     if (!LoadTGA(path, image))
     {
-        MessageBoxA(nullptr, "Failed to load TGA", "Error", MB_OK);
-        return;
+        throw std::runtime_error("Failed to load TGA: " + path);
     }
 
     // ===== FIX RGB → RGBA =====
@@ -1182,24 +1213,19 @@ void DirectXApp::CreateTextureFromTGA(
         }
 
         image.data = std::move(converted);
-
         pixelSize = 4;
     }
 
-    UINT expected = image.width * image.height * 4;
-
     // ===== TEXTURE RESOURCE =====
-
     D3D12_RESOURCE_DESC texDesc = {};
     texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     texDesc.Width = image.width;
     texDesc.Height = image.height;
     texDesc.DepthOrArraySize = 1;
     texDesc.MipLevels = 1;
-    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     texDesc.SampleDesc.Count = 1;
     texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1213,34 +1239,28 @@ void DirectXApp::CreateTextureFromTGA(
         IID_PPV_ARGS(&texture)));
 
     // ===== UPLOAD BUFFER =====
-
-    UINT64 uploadBufferSize;
+    UINT64 uploadSize = 0;
     device->GetCopyableFootprints(
-        &texDesc,
-        0,
-        1,
-        0,
-        nullptr,
-        nullptr,
-        nullptr,
-        &uploadBufferSize);
+        &texDesc, 0, 1, 0,
+        nullptr, nullptr, nullptr,
+        &uploadSize);
 
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufferDesc = {};
     bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = uploadBufferSize;
+    bufferDesc.Width = uploadSize;
     bufferDesc.Height = 1;
     bufferDesc.DepthOrArraySize = 1;
     bufferDesc.MipLevels = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     bufferDesc.SampleDesc.Count = 1;
 
-    ComPtr<ID3D12Resource> uploadBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
 
     ThrowIfFailed(device->CreateCommittedResource(
-        &uploadHeapProps,
+        &uploadHeap,
         D3D12_HEAP_FLAG_NONE,
         &bufferDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
@@ -1248,6 +1268,23 @@ void DirectXApp::CreateTextureFromTGA(
         IID_PPV_ARGS(&uploadBuffer)));
 
     // ===== COPY DATA =====
+    void* mapped = nullptr;
+    uploadBuffer->Map(0, nullptr, &mapped);
+
+    BYTE* dest = reinterpret_cast<BYTE*>(mapped);
+    BYTE* srcData = image.data.data();
+
+    UINT rowPitch = (image.width * 4 + 255) & ~255;
+
+    for (UINT y = 0; y < image.height; y++)
+    {
+        memcpy(
+            dest + y * rowPitch,
+            srcData + y * image.width * 4,
+            image.width * 4);
+    }
+
+    uploadBuffer->Unmap(0, nullptr);
 
     D3D12_TEXTURE_COPY_LOCATION dst = {};
     dst.pResource = texture.Get();
@@ -1258,47 +1295,115 @@ void DirectXApp::CreateTextureFromTGA(
     src.pResource = uploadBuffer.Get();
     src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 
-    UINT64 totalBytes = 0;
-
     device->GetCopyableFootprints(
-        &texDesc,
-        0,
-        1,
-        0,
+        &texDesc, 0, 1, 0,
         &src.PlacedFootprint,
+        nullptr, nullptr, nullptr);
+
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+    mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = texture.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    mCommandList->ResourceBarrier(1, &barrier);
+    mCommandList->Close();
+
+    ID3D12CommandList* cmdLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(1, cmdLists);
+
+    FlushCommandQueue();
+}
+
+void DirectXApp::CreateColorTexture(
+    const DirectX::XMFLOAT3& color,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
+{
+    UINT r = (UINT)(color.x * 255.0f);
+    UINT g = (UINT)(color.y * 255.0f);
+    UINT b = (UINT)(color.z * 255.0f);
+
+    UINT pixel = (255 << 24) | (b << 16) | (g << 8) | r;
+
+    // ---- TEXTURE (DEFAULT heap) ----
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = 1;
+    texDesc.Height = 1;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr,
+        IID_PPV_ARGS(&texture)));
+
+    // ---- UPLOAD BUFFER ----
+    UINT64 uploadSize = 0;
+    device->GetCopyableFootprints(
+        &texDesc, 0, 1, 0,
+        nullptr, nullptr, nullptr,
+        &uploadSize);
+
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = uploadSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.SampleDesc.Count = 1;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &uploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
-        &totalBytes);
+        IID_PPV_ARGS(&uploadBuffer)));
 
     // ---- MAP ----
-    void* mappedData = nullptr;
-    uploadBuffer->Map(0, nullptr, &mappedData);
-
-    BYTE* dest = reinterpret_cast<BYTE*>(mappedData);
-    BYTE* srcData = image.data.data();
-
-    UINT rowPitch = src.PlacedFootprint.Footprint.RowPitch;
-    UINT srcRowSize = image.width * pixelSize;
-
-    for (UINT y = 0; y < image.height; y++)
-    {
-        memcpy(
-            dest + y * rowPitch,
-            srcData + y * srcRowSize,
-            srcRowSize
-        );
-    }
-
+    void* mapped = nullptr;
+    uploadBuffer->Map(0, nullptr, &mapped);
+    memcpy(mapped, &pixel, sizeof(UINT));
     uploadBuffer->Unmap(0, nullptr);
 
     // ---- COPY ----
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = texture.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = uploadBuffer.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+
+    device->GetCopyableFootprints(
+        &texDesc, 0, 1, 0,
+        &src.PlacedFootprint,
+        nullptr, nullptr, nullptr);
+
     mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
 
-    mCommandList->CopyTextureRegion(
-        &dst,
-        0, 0, 0,
-        &src,
-        nullptr);
+    mCommandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

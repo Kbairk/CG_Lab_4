@@ -14,7 +14,8 @@ bool LoadOBJ(
 struct ParsedMaterial
 {
     std::string Name;
-    std::string DiffuseMap;
+    std::string DiffuseMap; // map_Kd
+    DirectX::XMFLOAT3 Kd = { 1.0f, 1.0f, 1.0f }; // цвет по умолчанию
 };
 
 bool LoadMTL(

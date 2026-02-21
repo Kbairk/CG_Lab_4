@@ -9,6 +9,7 @@ class DirectXApp;
 
 class Window {
 public:
+    HWND GetHwnd() const { return hWnd; }
     Window(HINSTANCE hInstance, int nCmdShow);
     ~Window();
 

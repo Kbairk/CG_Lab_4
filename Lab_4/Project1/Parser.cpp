@@ -7,6 +7,7 @@
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <sstream>
 
 using namespace DirectX;
 
@@ -16,6 +17,8 @@ bool LoadOBJ(
     std::vector<uint32_t>& outIndices,
     std::vector<Submesh>& outSubmeshes)
 {
+    outVertices.clear();
+    outIndices.clear();
     outSubmeshes.clear();
     std::vector<Submesh> submeshes;
     std::string currentMaterial = "";
@@ -50,7 +53,7 @@ bool LoadOBJ(
         {
             XMFLOAT2 uv;
             sscanf_s(line.c_str(), "vt %f %f", &uv.x, &uv.y);
-            uv.y = 1.0f - uv.y;
+            //uv.y = 1.0f - uv.y;
             texcoords.push_back(uv);
         }
         else if (line.rfind("vn ", 0) == 0)
@@ -63,7 +66,8 @@ bool LoadOBJ(
         else if (line.rfind("usemtl ", 0) == 0)
         {
             // если уже был материал Ч закрываем предыдущий submesh
-            if (!currentMaterial.empty())
+            if (!currentMaterial.empty() &&
+                outIndices.size() > currentStartIndex)
             {
                 Submesh sm;
                 sm.MaterialName = currentMaterial;
@@ -78,40 +82,41 @@ bool LoadOBJ(
 
         else if (line.rfind("f ", 0) == 0)
         {
-            int pi[3]{}, ti[3]{}, ni[3]{};
+            std::vector<int> pi, ti, ni;
 
-            int matched = sscanf_s(line.c_str(),
-                "f %d/%d/%d %d/%d/%d %d/%d/%d",
-                &pi[0], &ti[0], &ni[0],
-                &pi[1], &ti[1], &ni[1],
-                &pi[2], &ti[2], &ni[2]);
+            std::stringstream ss(line.substr(2));
+            std::string vert;
 
-            if (matched != 9)
-                continue;
-
-            for (int i = 0; i < 3; i++)
+            while (ss >> vert)
             {
-                Vertex v{};
+                int p = 0, t = 0, n = 0;
+                sscanf_s(vert.c_str(), "%d/%d/%d", &p, &t, &n);
 
-                int posIndex = pi[i] - 1;
-                int texIndex = ti[i] - 1;
-                int normIndex = ni[i] - 1;
+                pi.push_back(p);
+                ti.push_back(t);
+                ni.push_back(n);
+            }
 
-                if (posIndex >= 0 && posIndex < (int)positions.size())
+            // “риангул€ци€ fan способом
+            for (size_t i = 1; i + 1 < pi.size(); ++i)
+            {
+                int ids[3] = { 0, (int)i, (int)i + 1 };
+
+                for (int k = 0; k < 3; ++k)
+                {
+                    Vertex v{};
+
+                    int posIndex = pi[ids[k]] - 1;
+                    int texIndex = ti[ids[k]] - 1;
+                    int normIndex = ni[ids[k]] - 1;
+
                     v.position = positions[posIndex];
-
-                if (normIndex >= 0 && normIndex < (int)normals.size())
                     v.normal = normals[normIndex];
-                else
-                    v.normal = XMFLOAT3(0, 1, 0);
-
-                if (texIndex >= 0 && texIndex < (int)texcoords.size())
                     v.texcoord = texcoords[texIndex];
-                else
-                    v.texcoord = XMFLOAT2(0, 0);
 
-                outVertices.push_back(v);
-                outIndices.push_back((uint32_t)outVertices.size() - 1);
+                    outVertices.push_back(v);
+                    outIndices.push_back((uint32_t)outVertices.size() - 1);
+                }
             }
         }
     }
@@ -151,7 +156,8 @@ bool LoadOBJ(
         v.position.z -= center.z;
     }
 
-    if (!currentMaterial.empty())
+    if (!currentMaterial.empty() &&
+        outIndices.size() > currentStartIndex)
     {
         Submesh sm;
         sm.MaterialName = currentMaterial;
@@ -187,6 +193,11 @@ bool LoadMTL(
         else if (line.rfind("map_Kd ", 0) == 0)
         {
             current.DiffuseMap = line.substr(7);
+        }
+        else if (line.rfind("Kd ", 0) == 0)
+        {
+            std::stringstream ss(line.substr(3));
+            ss >> current.Kd.x >> current.Kd.y >> current.Kd.z;
         }
     }
 
