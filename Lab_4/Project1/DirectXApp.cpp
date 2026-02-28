@@ -903,6 +903,27 @@ bool DirectXApp::Initialize() {
 
         mMaterials.push_back(mat);
     }
+    //MATERIAL SETTINGS (TILING/ANIM)
+    for (auto& mat : mMaterials)
+    {
+        // повторяем пол
+        if (mat.Name.find("floor") != std::string::npos)
+        {
+            mat.Tiling = { 6.0f, 6.0f };
+        }
+
+        // анимируем ткани
+        if (mat.Name.find("fabric") != std::string::npos)
+        {
+            mat.UVSpeed = { 0.05f, 0.0f };
+        }
+
+        // лёгкий тайлинг колонн
+        if (mat.Name.find("column") != std::string::npos)
+        {
+            mat.Tiling = { 2.0f, 2.0f };
+        }
+    }
     BuildRootSignature();
     BuildShaders();
     BuildPSO();
@@ -1065,8 +1086,31 @@ void DirectXApp::Update(const Timer& gt)
     XMMATRIX worldViewProj = world * view * proj;
 
     ObjectConstants objConstants;
-    XMStoreFloat4x4(&objConstants.mWorldViewProj,
+
+    // WVP
+    XMStoreFloat4x4(
+        &objConstants.mWorldViewProj,
         XMMatrixTranspose(worldViewProj));
+
+    static float time = 0.0f;
+    time += gt.DeltaTime();
+
+    // TEST — чтобы увидеть эффект сразу
+    objConstants.uvTiling = { 6.0f, 6.0f };
+    objConstants.uvOffset = { time * 0.2f, 0.0f };
+
+    //      TEXTURE TILING + ANIMATION
+    //if (!mMaterials.empty())
+    //{
+    //    Material& mat = mMaterials[0];
+
+    //    objConstants.uvTiling = mat.Tiling;
+
+    //    float t = (float)mTimer.TotalTime();
+
+    //    objConstants.uvOffset.x = mat.UVSpeed.x * t;
+    //    objConstants.uvOffset.y = mat.UVSpeed.y * t;
+    //}
 
     mObjectCB->CopyData(0, objConstants);
 }
@@ -1125,7 +1169,7 @@ void DirectXApp::Draw(const Timer& gt)
 
     for (auto& sm : mSubmeshes)
     {
-        // 🔎 Найти материал
+        // Найти материал
         Material* mat = nullptr;
 
         for (auto& m : mMaterials)
@@ -1148,7 +1192,7 @@ void DirectXApp::Draw(const Timer& gt)
         //    MessageBoxA(nullptr, mat->Name.c_str(), "NO TEXTURE", MB_OK);
         //}
 
-        // 📌 Установить SRV конкретного материала
+        // SRV конкретного материала
         D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
             mCbvHeap->GetGPUDescriptorHandleForHeapStart();
 
@@ -1156,7 +1200,6 @@ void DirectXApp::Draw(const Timer& gt)
 
         mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
 
-        // 🎨 Нарисовать только этот submesh
         mCommandList->DrawIndexedInstanced(
             sm.IndexCount,
             1,

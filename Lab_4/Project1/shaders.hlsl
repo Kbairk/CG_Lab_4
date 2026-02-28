@@ -4,6 +4,11 @@ SamplerState gSampler : register(s0);
 cbuffer cbPerObject : register(b0)
 {
     float4x4 mWorldViewProj;
+
+    float2 uvTiling;
+    float2 uvOffset;
+
+    float4 padding;
 };
 
 struct VSInput
@@ -23,16 +28,17 @@ PSInput VS(VSInput vin)
 {
     PSInput vout;
     vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
-    vout.TexC = vin.Tex;   // ❗ ВАЖНО
+    vout.TexC = vin.Tex * uvTiling + uvOffset;
     return vout;
 }
 
 float4 PS(PSInput pin) : SV_Target
 {
-    float4 tex = gDiffuseMap.Sample(gSampler, pin.TexC);
+    float2 uv = pin.TexC * uvTiling + uvOffset;
 
-    // Отбрасываем полностью прозрачные пиксели
-    clip(tex.a - 0.05f);
+    float4 tex = gDiffuseMap.Sample(gSampler, uv);
+
+    clip(tex.a - 0.1f);
 
     return tex;
 }
