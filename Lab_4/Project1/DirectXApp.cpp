@@ -906,24 +906,18 @@ bool DirectXApp::Initialize() {
     //MATERIAL SETTINGS (TILING/ANIM)
     for (auto& mat : mMaterials)
     {
-        // повторяем пол
-        if (mat.Name.find("floor") != std::string::npos)
-        {
-            mat.Tiling = { 6.0f, 6.0f };
-        }
-
-        // анимируем ткани
         if (mat.Name.find("fabric") != std::string::npos)
         {
-            mat.UVSpeed = { 0.05f, 0.0f };
+            mat.UVSpeed = { 0.1f, 0.0f }; // флаги движутся
+            mat.Tiling = { 1.0f, 1.0f };
         }
 
-        // лёгкий тайлинг колонн
-        if (mat.Name.find("column") != std::string::npos)
+        if (mat.Name.find("floor") != std::string::npos)
         {
-            mat.Tiling = { 2.0f, 2.0f };
+            mat.Tiling = { 6.0f, 6.0f }; // тайлинг пола
         }
     }
+
     BuildRootSignature();
     BuildShaders();
     BuildPSO();
@@ -1097,7 +1091,7 @@ void DirectXApp::Update(const Timer& gt)
 
     // TEST — чтобы увидеть эффект сразу
     objConstants.uvTiling = { 6.0f, 6.0f };
-    objConstants.uvOffset = { time * 0.2f, 0.0f };
+    objConstants.uvOffset = { time * -0.2f, 0.0f };
 
     //      TEXTURE TILING + ANIMATION
     //if (!mMaterials.empty())
@@ -1112,7 +1106,7 @@ void DirectXApp::Update(const Timer& gt)
     //    objConstants.uvOffset.y = mat.UVSpeed.y * t;
     //}
 
-    mObjectCB->CopyData(0, objConstants);
+    //mObjectCB->CopyData(0, objConstants);
 }
 
 void DirectXApp::Draw(const Timer& gt)
@@ -1187,6 +1181,35 @@ void DirectXApp::Draw(const Timer& gt)
             continue;
         }
 
+        ObjectConstants objConstants;
+
+        // --- WVP ---
+        XMMATRIX world = XMMatrixIdentity();
+        XMMATRIX view = XMLoadFloat4x4(&mView);
+        XMMATRIX proj = XMLoadFloat4x4(&mProj);
+
+        XMMATRIX wvp = world * view * proj;
+
+        XMStoreFloat4x4(
+            &objConstants.mWorldViewProj,
+            XMMatrixTranspose(wvp));
+
+        // --- UV animation ---
+        float t = (float)mTimer.TotalTime();
+
+        // ===== TEST =====
+        objConstants.uvTiling = { 6.0f, 6.0f };
+        objConstants.uvOffset = { t * 0.2f, 0.0f };
+
+
+        //objConstants.uvTiling = mat->Tiling;
+
+        //objConstants.uvOffset =
+        //{
+        //    mat->UVSpeed.x * t,
+        //    mat->UVSpeed.y * t
+        //};
+
         //if (mat->DiffuseMap.empty())
         //{
         //    MessageBoxA(nullptr, mat->Name.c_str(), "NO TEXTURE", MB_OK);
@@ -1199,7 +1222,7 @@ void DirectXApp::Draw(const Timer& gt)
         srvHandle.ptr += (1 + mat->SrvHeapIndex) * mCbvSrvUavDescriptorSize;
 
         mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
-
+        mObjectCB->CopyData(0, objConstants);
         mCommandList->DrawIndexedInstanced(
             sm.IndexCount,
             1,
