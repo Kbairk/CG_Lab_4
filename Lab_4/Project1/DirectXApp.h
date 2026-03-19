@@ -54,6 +54,7 @@ public:
 
     // Обработка клавиатуры
     virtual void OnKeyDown(WPARAM wParam);
+    virtual void OnKeyUp(WPARAM wParam);
 
     void SetDirectXApp(DirectXApp* app) { dxApp = app; }
     DirectXApp* GetDirectXApp() const { return dxApp; }
@@ -61,6 +62,9 @@ public:
 private:
     float mYaw = 0.0f;
     float mPitch = 0.0f;
+    XMFLOAT2 mUvOffset = { 0.0f, 0.0f };
+    XMFLOAT2 mUvDirection = { 1.0f, 0.0f };
+    float mUvSpeed = 0.2f;
 
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
@@ -184,6 +188,7 @@ private:
     void CreateColorTexture(
         const DirectX::XMFLOAT3& color,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+    void UpdateUvDirectionFromInput();
 
     // Методы для доступа к ресурсам
     ID3D12Resource* CurrentBackBuffer() const;

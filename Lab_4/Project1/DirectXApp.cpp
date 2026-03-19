@@ -148,6 +148,27 @@ void DirectXApp::OnMouseMove(WPARAM btnState, int x, int y)
     mLastMousePos.y = y;
 }
 
+void DirectXApp::UpdateUvDirectionFromInput()
+{
+    InputDevice& input = window.GetInputDevice();
+
+    XMFLOAT2 direction = { 0.0f, 0.0f };
+
+    if (input.IsKeyDown(VK_LEFT))
+        direction.x -= 1.0f;
+
+    if (input.IsKeyDown(VK_RIGHT))
+        direction.x += 1.0f;
+
+    if (input.IsKeyDown(VK_UP))
+        direction.y += 1.0f;
+
+    if (input.IsKeyDown(VK_DOWN))
+        direction.y -= 1.0f;
+
+    mUvDirection = direction;
+}
+
 // =========== Input Layout ===========
 void DirectXApp::BuildInputLayout()
 {
@@ -965,6 +986,17 @@ void DirectXApp::OnKeyDown(WPARAM wParam)
             SetWindowText(window.GetHandle(), L"DirectX 12 Framework - Solid Mode (Press SPACE to switch)");
         }
     }
+
+    if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN) {
+        UpdateUvDirectionFromInput();
+    }
+}
+
+void DirectXApp::OnKeyUp(WPARAM wParam)
+{
+    if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN) {
+        UpdateUvDirectionFromInput();
+    }
 }
 
 int DirectXApp::Run() {
@@ -1074,6 +1106,9 @@ void DirectXApp::Update(const Timer& gt)
         1000.0f);
 
     XMStoreFloat4x4(&mProj, proj);
+
+    mUvOffset.x += mUvDirection.x * mUvSpeed * dt;
+    mUvOffset.y += mUvDirection.y * mUvSpeed * dt;
 
     // ===== WVP =====
     XMMATRIX world = XMMatrixIdentity();
@@ -1195,20 +1230,8 @@ void DirectXApp::Draw(const Timer& gt)
             XMMatrixTranspose(wvp));
 
         // --- UV animation ---
-        float t = (float)mTimer.TotalTime();
-
-        // ===== TEST =====
-        objConstants.uvTiling = { 6.0f, 6.0f };
-        objConstants.uvOffset = { t * 0.2f, 0.0f };
-
-
-        //objConstants.uvTiling = mat->Tiling;
-
-        //objConstants.uvOffset =
-        //{
-        //    mat->UVSpeed.x * t,
-        //    mat->UVSpeed.y * t
-        //};
+        objConstants.uvTiling = mat->Tiling;
+        objConstants.uvOffset = mUvOffset;
 
         //if (mat->DiffuseMap.empty())
         //{

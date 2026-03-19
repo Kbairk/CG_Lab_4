@@ -164,9 +164,18 @@ LRESULT CALLBACK Window::WindowProc(HWND hWnd, UINT message,
         break;
 
     case WM_KEYDOWN:
+        if (window && window->GetDirectXApp()) {
+            window->GetDirectXApp()->OnKeyDown(wParam);
+        }
         if (wParam == VK_ESCAPE) {
             DestroyWindow(hWnd);
             return 0;
+        }
+        break;
+
+    case WM_KEYUP:
+        if (window && window->GetDirectXApp()) {
+            window->GetDirectXApp()->OnKeyUp(wParam);
         }
         break;
     }
