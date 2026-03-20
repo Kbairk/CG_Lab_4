@@ -4,7 +4,13 @@
 #include <d3dcompiler.h>
 #include "d3dUtil.h"
 #include <string>
+#include <vector>
+#include <filesystem>
+#include <algorithm>
+#include <cstdint>
+#include <cctype>
 #include <DirectXMath.h>
+#include <wincodec.h>
 #include "Parser.h"
 #include "ThrowIfFailed.h"
 #include "TgaLoader.h"
@@ -12,8 +18,40 @@
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "windowscodecs.lib")
 
 using namespace DirectX;
+namespace fs = std::filesystem;
+
+namespace
+{
+    std::string ToLowerCopy(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        return value;
+    }
+
+    std::wstring Utf8ToWide(const std::string& value)
+    {
+        if (value.empty())
+            return {};
+
+        int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+        std::wstring result(size, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), size);
+        if (!result.empty() && result.back() == L'\0')
+            result.pop_back();
+        return result;
+    }
+
+    std::string NormalizeTextureReference(const std::string& value)
+    {
+        std::string normalized = value;
+        std::replace(normalized.begin(), normalized.end(), '\\', '/');
+        return normalized;
+    }
+}
 
 // Вспомогательная структура для барьеров
 struct CD3DX12_RESOURCE_BARRIER_HELPER {
@@ -167,6 +205,63 @@ void DirectXApp::UpdateUvDirectionFromInput()
         direction.y -= 1.0f;
 
     mUvDirection = direction;
+}
+
+void DirectXApp::UpdateSceneBounds(const std::vector<Vertex>& vertices)
+{
+    if (vertices.empty())
+        return;
+
+    mSceneBoundsMin = vertices[0].position;
+    mSceneBoundsMax = vertices[0].position;
+
+    for (const auto& vertex : vertices)
+    {
+        mSceneBoundsMin.x = std::min(mSceneBoundsMin.x, vertex.position.x);
+        mSceneBoundsMin.y = std::min(mSceneBoundsMin.y, vertex.position.y);
+        mSceneBoundsMin.z = std::min(mSceneBoundsMin.z, vertex.position.z);
+
+        mSceneBoundsMax.x = std::max(mSceneBoundsMax.x, vertex.position.x);
+        mSceneBoundsMax.y = std::max(mSceneBoundsMax.y, vertex.position.y);
+        mSceneBoundsMax.z = std::max(mSceneBoundsMax.z, vertex.position.z);
+    }
+
+    mSceneCenter =
+    {
+        (mSceneBoundsMin.x + mSceneBoundsMax.x) * 0.5f,
+        (mSceneBoundsMin.y + mSceneBoundsMax.y) * 0.5f,
+        (mSceneBoundsMin.z + mSceneBoundsMax.z) * 0.5f
+    };
+}
+
+void DirectXApp::ResetCameraToScene()
+{
+    const float extentX = mSceneBoundsMax.x - mSceneBoundsMin.x;
+    const float extentY = mSceneBoundsMax.y - mSceneBoundsMin.y;
+    const float extentZ = mSceneBoundsMax.z - mSceneBoundsMin.z;
+    const float maxExtent = std::max({ extentX, extentY, extentZ, 1.0f });
+
+    mEyePos =
+    {
+        mSceneCenter.x,
+        mSceneCenter.y + maxExtent * 0.2f,
+        mSceneCenter.z - maxExtent * 1.5f
+    };
+
+    XMFLOAT3 forward =
+    {
+        mSceneCenter.x - mEyePos.x,
+        mSceneCenter.y - mEyePos.y,
+        mSceneCenter.z - mEyePos.z
+    };
+
+    XMVECTOR forwardVec = XMVector3Normalize(XMLoadFloat3(&forward));
+
+    XMFLOAT3 normalizedForward;
+    XMStoreFloat3(&normalizedForward, forwardVec);
+
+    mYaw = atan2f(normalizedForward.z, normalizedForward.x);
+    mPitch = asinf(normalizedForward.y);
 }
 
 // =========== Input Layout ===========
@@ -450,9 +545,6 @@ void DirectXApp::BuildWireframePSO()
 // =========== Остальные методы ===========
 void DirectXApp::BuildObj(const std::string& path)
 {
-    MessageBoxA(nullptr, "BuildObj called", "DEBUG", MB_OK);
-
-    // Очистить старые данные
     mSubmeshes.clear();
 
     std::vector<Vertex> vertices;
@@ -465,7 +557,15 @@ void DirectXApp::BuildObj(const std::string& path)
         return;
     }
 
+    // OBJ хранит V-координату в системе с нижним левым углом, а PNG через WIC читается сверху вниз.
+    for (auto& vertex : vertices)
+    {
+        vertex.texcoord.y = 1.0f - vertex.texcoord.y;
+    }
+
     mIndexCount = static_cast<UINT>(indices.size());
+    UpdateSceneBounds(vertices);
+    ResetCameraToScene();
 
     UINT vbByteSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
     UINT ibByteSize = static_cast<UINT>(indices.size() * sizeof(uint32_t));
@@ -565,6 +665,11 @@ void DirectXApp::Shutdown() {
     device.Reset();
     adapter.Reset();
     dxgiFactory.Reset();
+
+    if (mComInitialized) {
+        CoUninitialize();
+        mComInitialized = false;
+    }
 }
 
 bool DirectXApp::CreateDXGIFactory() {
@@ -675,6 +780,9 @@ bool DirectXApp::CreateFence() {
 }
 
 void DirectXApp::FlushCommandQueue() {
+    if (!mCommandQueue || !mFence)
+        return;
+
     mFenceValue++;
     mCommandQueue->Signal(mFence.Get(), mFenceValue);
 
@@ -758,7 +866,7 @@ bool DirectXApp::CreateDescriptorHeaps() {
 
     // 3. CBV/SRV/UAV куча
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NumDescriptors = 1 + 200; // 1 CBV + 1 SRV
+    cbvHeapDesc.NumDescriptors = 1 + 1024; // 1 CBV + запас под SRV для крупных сцен
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
@@ -864,6 +972,19 @@ bool DirectXApp::Initialize() {
     #endif
     MessageBox(NULL, L"Starting DirectX 12 initialization...", L"Info", MB_OK);
 
+    HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (SUCCEEDED(comResult))
+    {
+        mComInitialized = true;
+    }
+    else if (comResult != RPC_E_CHANGED_MODE)
+    {
+        MessageBox(NULL, L"Failed to initialize COM for WIC texture loading", L"Error", MB_OK);
+        return false;
+    }
+
+    mSceneAssetDirectory = "../Project1/Assets/San_Miguel";
+
     // Основные этапы инициализации
     if (!CreateDXGIFactory()) return false;
     if (!CreateD3DDevice()) return false;
@@ -883,9 +1004,9 @@ bool DirectXApp::Initialize() {
     BuildInputLayout();
    //BuildVertexBuffer();
    //BuildIndexBuffer();
-    BuildObj("../Project1/sponza.obj");
+    BuildObj(mSceneAssetDirectory + "/san-miguel-low-poly.obj");
     std::vector<ParsedMaterial> parsed;
-    LoadMTL("../Project1/sponza.mtl", parsed);
+    LoadMTL(mSceneAssetDirectory + "/san-miguel-low-poly.mtl", parsed);
 
     UINT srvIndex = 0;
 
@@ -897,9 +1018,9 @@ bool DirectXApp::Initialize() {
 
         if (!p.DiffuseMap.empty())
         {
-            CreateTextureFromTGA(
-                "../Project1/" + p.DiffuseMap,
-                mat.DiffuseTexture);
+            fs::path texturePath = fs::path(mSceneAssetDirectory) / NormalizeTextureReference(p.DiffuseMap);
+            CreateTextureFromFile(texturePath.lexically_normal().string(), mat.DiffuseTexture);
+            mat.DiffuseMap = texturePath.lexically_normal().string();
         }
         else
         {
@@ -908,6 +1029,7 @@ bool DirectXApp::Initialize() {
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        // PNG загружается через WIC в 32bpp BGRA, поэтому SRV должен оставаться BGRA без swizzle.
         srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
@@ -1050,7 +1172,6 @@ void DirectXApp::CalculateFrameStats() {
 void DirectXApp::Update(const Timer& gt)
 {
     float dt = gt.DeltaTime();
-    float speed = 50.0f;
 
     // ===== Forward Vector =====
     XMFLOAT3 forward =
@@ -1072,22 +1193,22 @@ void DirectXApp::Update(const Timer& gt)
     XMVECTOR pos = XMLoadFloat3(&mEyePos);
 
     if (GetAsyncKeyState('W') & 0x8000)
-        pos += forwardVec * speed * dt;
+        pos += forwardVec * mCameraSpeed * dt;
 
     if (GetAsyncKeyState('S') & 0x8000)
-        pos -= forwardVec * speed * dt;
+        pos -= forwardVec * mCameraSpeed * dt;
 
     if (GetAsyncKeyState('A') & 0x8000)
-        pos -= rightVec * speed * dt;
+        pos -= rightVec * mCameraSpeed * dt;
 
     if (GetAsyncKeyState('D') & 0x8000)
-        pos += rightVec * speed * dt;
+        pos += rightVec * mCameraSpeed * dt;
 
     if (GetAsyncKeyState(VK_SPACE) & 0x8000)
-        pos += XMVectorSet(0, 1, 0, 0) * speed * dt;
+        pos += XMVectorSet(0, 1, 0, 0) * mCameraSpeed * dt;
 
     if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
-        pos -= XMVectorSet(0, 1, 0, 0) * speed * dt;
+        pos -= XMVectorSet(0, 1, 0, 0) * mCameraSpeed * dt;
 
     XMStoreFloat3(&mEyePos, pos);
 
@@ -1109,39 +1230,6 @@ void DirectXApp::Update(const Timer& gt)
 
     mUvOffset.x += mUvDirection.x * mUvSpeed * dt;
     mUvOffset.y += mUvDirection.y * mUvSpeed * dt;
-
-    // ===== WVP =====
-    XMMATRIX world = XMMatrixIdentity();
-    XMMATRIX worldViewProj = world * view * proj;
-
-    ObjectConstants objConstants;
-
-    // WVP
-    XMStoreFloat4x4(
-        &objConstants.mWorldViewProj,
-        XMMatrixTranspose(worldViewProj));
-
-    static float time = 0.0f;
-    time += gt.DeltaTime();
-
-    // TEST — чтобы увидеть эффект сразу
-    objConstants.uvTiling = { 6.0f, 6.0f };
-    objConstants.uvOffset = { time * -0.2f, 0.0f };
-
-    //      TEXTURE TILING + ANIMATION
-    //if (!mMaterials.empty())
-    //{
-    //    Material& mat = mMaterials[0];
-
-    //    objConstants.uvTiling = mat.Tiling;
-
-    //    float t = (float)mTimer.TotalTime();
-
-    //    objConstants.uvOffset.x = mat.UVSpeed.x * t;
-    //    objConstants.uvOffset.y = mat.UVSpeed.y * t;
-    //}
-
-    //mObjectCB->CopyData(0, objConstants);
 }
 
 void DirectXApp::Draw(const Timer& gt)
@@ -1275,41 +1363,17 @@ void DirectXApp::Draw(const Timer& gt)
     FlushCommandQueue();
 }
 
-void DirectXApp::CreateTextureFromTGA(
-    const std::string& path,
+void DirectXApp::UploadTextureData(
+    int width,
+    int height,
+    const std::vector<uint8_t>& rgbaData,
     Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
 {
-    TgaImage image;
-    if (!LoadTGA(path, image))
-    {
-        throw std::runtime_error("Failed to load TGA: " + path);
-    }
-
-    // ===== FIX RGB → RGBA =====
-    UINT pixelSize = image.data.size() / (image.width * image.height);
-
-    if (pixelSize == 3)
-    {
-        std::vector<uint8_t> converted;
-        converted.resize(image.width * image.height * 4);
-
-        for (UINT i = 0; i < image.width * image.height; i++)
-        {
-            converted[i * 4 + 0] = image.data[i * 3 + 0];
-            converted[i * 4 + 1] = image.data[i * 3 + 1];
-            converted[i * 4 + 2] = image.data[i * 3 + 2];
-            converted[i * 4 + 3] = 255;
-        }
-
-        image.data = std::move(converted);
-        pixelSize = 4;
-    }
-
     // ===== TEXTURE RESOURCE =====
     D3D12_RESOURCE_DESC texDesc = {};
     texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Width = image.width;
-    texDesc.Height = image.height;
+    texDesc.Width = width;
+    texDesc.Height = height;
     texDesc.DepthOrArraySize = 1;
     texDesc.MipLevels = 1;
     texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1361,16 +1425,16 @@ void DirectXApp::CreateTextureFromTGA(
     uploadBuffer->Map(0, nullptr, &mapped);
 
     BYTE* dest = reinterpret_cast<BYTE*>(mapped);
-    BYTE* srcData = image.data.data();
+    const BYTE* srcData = rgbaData.data();
 
-    UINT rowPitch = (image.width * 4 + 255) & ~255;
+    UINT rowPitch = (width * 4 + 255) & ~255;
 
-    for (UINT y = 0; y < image.height; y++)
+    for (int y = 0; y < height; y++)
     {
         memcpy(
             dest + y * rowPitch,
-            srcData + y * image.width * 4,
-            image.width * 4);
+            srcData + y * width * 4,
+            width * 4);
     }
 
     uploadBuffer->Unmap(0, nullptr);
@@ -1406,6 +1470,109 @@ void DirectXApp::CreateTextureFromTGA(
     mCommandQueue->ExecuteCommandLists(1, cmdLists);
 
     FlushCommandQueue();
+}
+
+void DirectXApp::CreateTextureFromTGA(
+    const std::string& path,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
+{
+    TgaImage image;
+    if (!LoadTGA(path, image))
+    {
+        throw std::runtime_error("Failed to load TGA: " + path);
+    }
+
+    std::vector<uint8_t> converted;
+    converted.resize(image.width * image.height * 4);
+
+    const bool sourceHasAlpha = image.channels == 4;
+
+    for (int i = 0; i < image.width * image.height; i++)
+    {
+        converted[i * 4 + 0] = image.data[i * image.channels + 0];
+        converted[i * 4 + 1] = image.data[i * image.channels + 1];
+        converted[i * 4 + 2] = image.data[i * image.channels + 2];
+        converted[i * 4 + 3] = sourceHasAlpha ? image.data[i * image.channels + 3] : 255;
+    }
+
+    UploadTextureData(image.width, image.height, converted, texture);
+}
+
+void DirectXApp::CreateTextureFromPNG(
+    const std::string& path,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
+{
+    ComPtr<IWICImagingFactory> wicFactory;
+    HRESULT hr = CoCreateInstance(
+        CLSID_WICImagingFactory2,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&wicFactory));
+
+    if (FAILED(hr))
+    {
+        ThrowIfFailed(CoCreateInstance(
+            CLSID_WICImagingFactory,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&wicFactory)));
+    }
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    std::wstring widePath = Utf8ToWide(path);
+    ThrowIfFailed(wicFactory->CreateDecoderFromFilename(
+        widePath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad,
+        &decoder));
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    ThrowIfFailed(decoder->GetFrame(0, &frame));
+
+    ComPtr<IWICFormatConverter> converter;
+    ThrowIfFailed(wicFactory->CreateFormatConverter(&converter));
+    ThrowIfFailed(converter->Initialize(
+        frame.Get(),
+        GUID_WICPixelFormat32bppBGRA,
+        WICBitmapDitherTypeNone,
+        nullptr,
+        0.0f,
+        WICBitmapPaletteTypeCustom));
+
+    UINT width = 0;
+    UINT height = 0;
+    ThrowIfFailed(converter->GetSize(&width, &height));
+
+    std::vector<uint8_t> pixels(width * height * 4);
+    ThrowIfFailed(converter->CopyPixels(
+        nullptr,
+        width * 4,
+        static_cast<UINT>(pixels.size()),
+        pixels.data()));
+
+    UploadTextureData(static_cast<int>(width), static_cast<int>(height), pixels, texture);
+}
+
+void DirectXApp::CreateTextureFromFile(
+    const std::string& path,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& texture)
+{
+    std::string extension = ToLowerCopy(fs::path(path).extension().string());
+
+    if (extension == ".tga")
+    {
+        CreateTextureFromTGA(path, texture);
+        return;
+    }
+
+    if (extension == ".png")
+    {
+        CreateTextureFromPNG(path, texture);
+        return;
+    }
+
+    throw std::runtime_error("Unsupported texture format: " + path);
 }
 
 void DirectXApp::CreateColorTexture(

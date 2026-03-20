@@ -1,5 +1,8 @@
 ﻿#pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -63,13 +66,30 @@ private:
     float mYaw = 0.0f;
     float mPitch = 0.0f;
     XMFLOAT2 mUvOffset = { 0.0f, 0.0f };
-    XMFLOAT2 mUvDirection = { 1.0f, 0.0f };
+    XMFLOAT2 mUvDirection = { 0.0f, 0.0f };
     float mUvSpeed = 0.2f;
+    float mCameraSpeed = 8.0f;
 
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
+    XMFLOAT3 mSceneBoundsMin = { 0.0f, 0.0f, 0.0f };
+    XMFLOAT3 mSceneBoundsMax = { 0.0f, 0.0f, 0.0f };
+    XMFLOAT3 mSceneCenter = { 0.0f, 0.0f, 0.0f };
+    std::string mSceneAssetDirectory;
+    bool mComInitialized = false;
     void CreateTextureFromTGA(
         const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+    void CreateTextureFromPNG(
+        const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+    void CreateTextureFromFile(
+        const std::string& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
+    void UploadTextureData(
+        int width,
+        int height,
+        const std::vector<uint8_t>& rgbaData,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
 
     DirectXApp* dxApp = nullptr;
@@ -189,6 +209,8 @@ private:
         const DirectX::XMFLOAT3& color,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
     void UpdateUvDirectionFromInput();
+    void UpdateSceneBounds(const std::vector<Vertex>& vertices);
+    void ResetCameraToScene();
 
     // Методы для доступа к ресурсам
     ID3D12Resource* CurrentBackBuffer() const;
