@@ -283,21 +283,24 @@ void DirectXApp::BuildInputLayout()
 // =========== Шейдеры ===========
 void DirectXApp::BuildShaders()
 {
-    mvsByteCode = d3dUtil::CompileShader(
-        L"../Project1/shaders.hlsl",
+    const std::wstring shaderSource = L"../Project1/shaders.hlsl";
+    const std::wstring shaderCacheDir = L"../Project1/ShaderCache";
+
+    mvsByteCode = d3dUtil::LoadOrCompileShader(
+        shaderSource,
+        shaderCacheDir + L"/VS_vs_5_0.cso",
         nullptr,
         "VS",
         "vs_5_0"
     );
 
-    mpsByteCode = d3dUtil::CompileShader(
-        L"../Project1/shaders.hlsl",
+    mpsByteCode = d3dUtil::LoadOrCompileShader(
+        shaderSource,
+        shaderCacheDir + L"/PS_ps_5_0.cso",
         nullptr,
         "PS",
         "ps_5_0"
     );
-
-    MessageBox(NULL, L"SUCCESS! Shaders compiled", L"Info", MB_OK);
 }
 
 // =========== Константный буфер и CBV ===========
@@ -331,7 +334,6 @@ void DirectXApp::BuildConstantBuffer()
     D3D12_CPU_DESCRIPTOR_HANDLE cbvHandle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
     device->CreateConstantBufferView(&cbvDesc, cbvHandle);
 
-    MessageBox(NULL, L"Constant buffer and CBV created", L"Info", MB_OK);
 }
 
 // =========== Root Signature ===========
@@ -479,7 +481,6 @@ void DirectXApp::BuildPSO()
         return;
     }
 
-    MessageBox(NULL, L"PSO created successfully (Solid Mode)", L"Info", MB_OK);
 }
 
 // =========== Wireframe PSO ===========
@@ -540,7 +541,6 @@ void DirectXApp::BuildWireframePSO()
         return;
     }
 
-    MessageBox(NULL, L"Wireframe PSO created successfully", L"Info", MB_OK);
 }
 // =========== Остальные методы ===========
 void DirectXApp::BuildObj(const std::string& path)
@@ -716,7 +716,7 @@ bool DirectXApp::CreateD3DDevice() {
             MessageBox(NULL, L"No hardware adapter found and WARP failed", L"Error", MB_OK);
             return false;
         }
-        MessageBox(NULL, L"Using WARP software adapter", L"Info", MB_OK);
+        OutputDebugStringA("Using WARP software adapter\n");
     }
 
     HRESULT hr = D3D12CreateDevice(
@@ -970,8 +970,6 @@ bool DirectXApp::Initialize() {
             }
         }
     #endif
-    MessageBox(NULL, L"Starting DirectX 12 initialization...", L"Info", MB_OK);
-
     HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (SUCCEEDED(comResult))
     {
@@ -1171,7 +1169,15 @@ void DirectXApp::CalculateFrameStats() {
 
 void DirectXApp::Update(const Timer& gt)
 {
-    float dt = gt.DeltaTime();
+    float dt = std::min(gt.DeltaTime(), 0.033f);
+    float speedMultiplier = 1.0f;
+
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+        speedMultiplier = 3.0f;
+    else if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
+        speedMultiplier = 0.25f;
+
+    const float moveSpeed = mCameraSpeed * speedMultiplier;
 
     // ===== Forward Vector =====
     XMFLOAT3 forward =
@@ -1193,22 +1199,22 @@ void DirectXApp::Update(const Timer& gt)
     XMVECTOR pos = XMLoadFloat3(&mEyePos);
 
     if (GetAsyncKeyState('W') & 0x8000)
-        pos += forwardVec * mCameraSpeed * dt;
+        pos += forwardVec * moveSpeed * dt;
 
     if (GetAsyncKeyState('S') & 0x8000)
-        pos -= forwardVec * mCameraSpeed * dt;
+        pos -= forwardVec * moveSpeed * dt;
 
     if (GetAsyncKeyState('A') & 0x8000)
-        pos -= rightVec * mCameraSpeed * dt;
+        pos -= rightVec * moveSpeed * dt;
 
     if (GetAsyncKeyState('D') & 0x8000)
-        pos += rightVec * mCameraSpeed * dt;
+        pos += rightVec * moveSpeed * dt;
 
     if (GetAsyncKeyState(VK_SPACE) & 0x8000)
-        pos += XMVectorSet(0, 1, 0, 0) * mCameraSpeed * dt;
+        pos += XMVectorSet(0, 1, 0, 0) * moveSpeed * dt;
 
-    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
-        pos -= XMVectorSet(0, 1, 0, 0) * mCameraSpeed * dt;
+    if (GetAsyncKeyState('Q') & 0x8000)
+        pos -= XMVectorSet(0, 1, 0, 0) * moveSpeed * dt;
 
     XMStoreFloat3(&mEyePos, pos);
 

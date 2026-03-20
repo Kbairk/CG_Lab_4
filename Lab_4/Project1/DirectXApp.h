@@ -68,7 +68,7 @@ private:
     XMFLOAT2 mUvOffset = { 0.0f, 0.0f };
     XMFLOAT2 mUvDirection = { 0.0f, 0.0f };
     float mUvSpeed = 0.2f;
-    float mCameraSpeed = 8.0f;
+    float mCameraSpeed = 2.0f;
 
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;

@@ -1,17 +1,45 @@
-﻿#include "d3dUtil.h"
+#include "d3dUtil.h"
 #include "ThrowIfFailed.h"
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 namespace d3dUtil
 {
+    Microsoft::WRL::ComPtr<ID3DBlob> LoadOrCompileShader(
+        const std::wstring& sourceFilename,
+        const std::wstring& bytecodeFilename,
+        const D3D_SHADER_MACRO* defines,
+        const std::string& entrypoint,
+        const std::string& target)
+    {
+        if (fs::exists(bytecodeFilename))
+        {
+            Microsoft::WRL::ComPtr<ID3DBlob> cachedByteCode = nullptr;
+            ThrowIfFailed(D3DReadFileToBlob(bytecodeFilename.c_str(), &cachedByteCode));
+            return cachedByteCode;
+        }
+
+        Microsoft::WRL::ComPtr<ID3DBlob> byteCode =
+            CompileShader(sourceFilename, defines, entrypoint, target);
+
+        fs::create_directories(fs::path(bytecodeFilename).parent_path());
+        ThrowIfFailed(D3DWriteBlobToFile(byteCode.Get(), bytecodeFilename.c_str(), TRUE));
+
+        return byteCode;
+    }
+
     Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(
         const std::wstring& filename,
         const D3D_SHADER_MACRO* defines,
         const std::string& entrypoint,
         const std::string& target)
     {
-        UINT compileFlags = 0;
+        UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS;
 #ifdef _DEBUG
-        compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+        compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+        compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
 
         Microsoft::WRL::ComPtr<ID3DBlob> byteCode = nullptr;
@@ -32,7 +60,7 @@ namespace d3dUtil
         if (errors != nullptr)
         {
             std::string errorStr = "Shader Compile Error:\n";
-            errorStr += (char*)errors->GetBufferPointer();
+            errorStr += static_cast<char*>(errors->GetBufferPointer());
             OutputDebugStringA(errorStr.c_str());
         }
 
@@ -40,8 +68,9 @@ namespace d3dUtil
         {
             if (errors)
             {
-                MessageBoxA(0,
-                    (char*)errors->GetBufferPointer(),
+                MessageBoxA(
+                    0,
+                    static_cast<char*>(errors->GetBufferPointer()),
                     "Shader Compile Error",
                     MB_OK);
             }
@@ -52,8 +81,6 @@ namespace d3dUtil
 
     UINT CalcConstantBufferByteSize(UINT byteSize)
     {
-        // Constant buffers must be a multiple of 256 bytes.
-        // Round up to nearest multiple of 256.
         return (byteSize + 255) & ~255;
     }
 }
