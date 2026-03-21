@@ -939,11 +939,15 @@ bool DirectXApp::Initialize() {
         }
     }
 
-    BuildRootSignature();
-    BuildShaders();
-    BuildPSO();
-    BuildWireframePSO();  
     BuildConstantBuffer();
+    mRenderingSystem = std::make_unique<RenderingSystem>();
+    mRenderingSystem->Initialize(
+        device.Get(),
+        static_cast<UINT>(mClientWidth),
+        static_cast<UINT>(mClientHeight),
+        mBackBufferFormat,
+        mCbvSrvUavDescriptorSize,
+        mRtvDescriptorSize);
 
     // Инициализация проекционной матрицы
     XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * XM_PI,
@@ -1146,122 +1150,38 @@ void DirectXApp::Update(const Timer& gt)
 
 void DirectXApp::Draw(const Timer& gt)
 {
-    if (mIndexCount == 0)
+    if (mIndexCount == 0 || !mRenderingSystem)
         return;
 
     mDirectCmdListAlloc->Reset();
+    mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr);
+    SetViewportAndScissor();
 
-    if (mWireframeMode)
-        mCommandList->Reset(mDirectCmdListAlloc.Get(), mWireframePSO.Get());
-    else
-        mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get());
+    SceneRenderContext scene = {};
+    scene.VertexBufferView = mVertexBufferView;
+    scene.IndexBufferView = mIndexBufferView;
+    scene.ObjectConstantsBuffer = mObjectCB.get();
+    scene.MaterialHeap = mCbvHeap.Get();
+    scene.MaterialDescriptorSize = mCbvSrvUavDescriptorSize;
+    scene.Submeshes = &mSubmeshes;
+    scene.Materials = &mMaterials;
+    scene.View = mView;
+    scene.Proj = mProj;
+    scene.EyePos = mEyePos;
+    scene.UvOffset = mUvOffset;
+    scene.Wireframe = mWireframeMode;
+
+    mRenderingSystem->Render(
+        mCommandList.Get(),
+        CurrentBackBuffer(),
+        CurrentBackBufferView(),
+        scene);
 
     D3D12_RESOURCE_BARRIER barrier =
         CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
             CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    SetViewportAndScissor();
-
-    const float clearColor[] = { 1.0f, 0.0f, 1.0f, 1.0f };
-
-    auto rtvHandle = CurrentBackBufferView();
-    auto dsvHandle = mDsvHeap->GetCPUDescriptorHandleForHeapStart();
-
-    mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    mCommandList->ClearDepthStencilView(
-        dsvHandle,
-        D3D12_CLEAR_FLAG_DEPTH,
-        1.0f,
-        0,
-        0,
-        nullptr);
-
-    mCommandList->OMSetRenderTargets(1, &rtvHandle, true, &dsvHandle);
-
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-
-    ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get() };
-    mCommandList->SetDescriptorHeaps(1, heaps);
-
-    // CBV (b0)
-    mCommandList->SetGraphicsRootDescriptorTable(
-        0,
-        mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
-    mCommandList->IASetIndexBuffer(&mIndexBufferView);
-
-    for (auto& sm : mSubmeshes)
-    {
-        // Найти материал
-        Material* mat = nullptr;
-
-        for (auto& m : mMaterials)
-        {
-            if (m.Name == sm.MaterialName)
-            {
-                mat = &m;
-                break;
-            }
-        }
-
-        if (!mat)
-        {
-            MessageBoxA(nullptr, sm.MaterialName.c_str(), "Missing Material", MB_OK);
-            continue;
-        }
-
-        ObjectConstants objConstants;
-
-        // --- WVP ---
-        XMMATRIX world = XMMatrixIdentity();
-        XMMATRIX view = XMLoadFloat4x4(&mView);
-        XMMATRIX proj = XMLoadFloat4x4(&mProj);
-
-        XMMATRIX wvp = world * view * proj;
-
-        XMStoreFloat4x4(
-            &objConstants.mWorldViewProj,
-            XMMatrixTranspose(wvp));
-
-        // --- UV animation ---
-        objConstants.uvTiling = mat->Tiling;
-        objConstants.uvOffset = mUvOffset;
-
-        //if (mat->DiffuseMap.empty())
-        //{
-        //    MessageBoxA(nullptr, mat->Name.c_str(), "NO TEXTURE", MB_OK);
-        //}
-
-        // SRV конкретного материала
-        D3D12_GPU_DESCRIPTOR_HANDLE srvHandle =
-            mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-
-        srvHandle.ptr += (1 + mat->SrvHeapIndex) * mCbvSrvUavDescriptorSize;
-
-        mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
-        mObjectCB->CopyData(0, objConstants);
-        mCommandList->DrawIndexedInstanced(
-            sm.IndexCount,
-            1,
-            sm.IndexStart,
-            0,
-            0);
-    }
-
-    // === PRESENT ===
-
-    barrier =
-        CD3DX12_RESOURCE_BARRIER_HELPER::Transition(
-            CurrentBackBuffer(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PRESENT);
-
     mCommandList->ResourceBarrier(1, &barrier);
 
     mCommandList->Close();

@@ -190,6 +190,7 @@
     <ClInclude Include="MathHelper.h" />
     <ClInclude Include="ObjectConstants.h" />
     <ClInclude Include="Parser.h" />
+    <ClInclude Include="RenderingSystem.h" />
     <ClInclude Include="TgaLoader.h" />
     <ClInclude Include="ThrowIfFailed.h" />
     <ClInclude Include="Timer.h" />
@@ -205,6 +206,7 @@
     <ClCompile Include="MathHelper.cpp" />
     <ClCompile Include="ObjectConstants.cpp" />
     <ClCompile Include="Parser.cpp" />
+    <ClCompile Include="RenderingSystem.cpp" />
     <ClCompile Include="TgaLoader.cpp" />
     <ClCompile Include="ThrowIfFailed.cpp" />
     <ClCompile Include="Timer.cpp" />

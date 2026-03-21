@@ -18,6 +18,7 @@
 #include "Material.h"
 #include "Submesh.h"
 #include "ThrowIfFailed.h"
+#include "RenderingSystem.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -143,6 +144,7 @@ private:
 
     // =========== Constant Buffer ===========
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+    std::unique_ptr<RenderingSystem> mRenderingSystem = nullptr;
 
     // =========== Root Signature и PSO ===========
     Microsoft::WRL::ComPtr<ID3D12RootSignature> mRootSignature;
