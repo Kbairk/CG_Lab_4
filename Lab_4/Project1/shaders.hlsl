@@ -36,11 +36,18 @@ struct SpotLightGpu
 cbuffer cbFrame : register(b0)
 {
     float4x4 gInvViewProj;
+    float4x4 gViewProj;
     float4 gCameraPosition;
     float4 gLightCounts;
+    float4 gScreenSize;
     DirectionalLightGpu gDirectionalLights[1];
-    PointLightGpu gPointLights[4];
     SpotLightGpu gSpotLights[2];
+};
+
+cbuffer cbPointLight : register(b1)
+{
+    float4 gPointLightPositionRange;
+    float4 gPointLightColorIntensity;
 };
 
 struct VSInput
@@ -67,6 +74,16 @@ struct FullscreenPSInput
 {
     float4 PosH : SV_POSITION;
     float2 TexC : TEXCOORD;
+};
+
+struct PointLightVolumeInput
+{
+    float3 Pos : POSITION;
+};
+
+struct PointLightVolumePSInput
+{
+    float4 PosH : SV_POSITION;
 };
 
 GeometryPSInput GeometryVS(VSInput vin)
@@ -145,34 +162,27 @@ float3 ComputeDirectionalLight(float3 normal, float3 viewDir, float3 albedo, flo
     return color;
 }
 
-float3 ComputePointLights(float3 normal, float3 viewDir, float3 albedo, float3 worldPos)
+float3 ComputeSinglePointLight(float3 normal, float3 viewDir, float3 albedo, float3 worldPos)
 {
-    float3 color = 0.0f;
+    float3 lightVector = gPointLightPositionRange.xyz - worldPos;
+    float distanceToLight = length(lightVector);
+    float range = gPointLightPositionRange.w;
 
-    [unroll]
-    for (int i = 0; i < (int)gLightCounts.y; ++i)
-    {
-        float3 lightVector = gPointLights[i].positionRange.xyz - worldPos;
-        float distanceToLight = length(lightVector);
-        float range = gPointLights[i].positionRange.w;
+    if (distanceToLight > range)
+        return 0.0f;
 
-        if (distanceToLight > range)
-            continue;
+    float attenuation = 1.0f - saturate(distanceToLight / range);
+    attenuation *= attenuation;
+    float3 lightDir = normalize(lightVector);
+    float ndl = saturate(dot(normal, lightDir));
+    float3 halfVec = normalize(lightDir + viewDir);
+    float spec = pow(saturate(dot(normal, halfVec)), 32.0f);
 
-        float attenuation = 1.0f - saturate(distanceToLight / range);
-        float3 lightDir = normalize(lightVector);
-        float ndl = saturate(dot(normal, lightDir));
-        float3 halfVec = normalize(lightDir + viewDir);
-        float spec = pow(saturate(dot(normal, halfVec)), 32.0f);
+    float3 lightColor = gPointLightColorIntensity.xyz;
+    float intensity = gPointLightColorIntensity.w;
 
-        float3 lightColor = gPointLights[i].colorIntensity.xyz;
-        float intensity = gPointLights[i].colorIntensity.w;
-
-        color += albedo * lightColor * ndl * intensity * attenuation;
-        color += lightColor * spec * intensity * attenuation * 0.35f;
-    }
-
-    return color;
+    return albedo * lightColor * ndl * intensity * attenuation +
+        lightColor * spec * intensity * attenuation * 0.35f;
 }
 
 float3 ComputeSpotLights(float3 normal, float3 viewDir, float3 albedo, float3 worldPos)
@@ -225,9 +235,38 @@ float4 LightingPS(FullscreenPSInput pin) : SV_Target
 
     float3 color = albedo * 0.05f;
     color += ComputeDirectionalLight(normal, viewDir, albedo, worldPos);
-    color += ComputePointLights(normal, viewDir, albedo, worldPos);
     color += ComputeSpotLights(normal, viewDir, albedo, worldPos);
 
+    return float4(color, 1.0f);
+}
+
+PointLightVolumePSInput PointLightVolumeVS(PointLightVolumeInput vin)
+{
+    PointLightVolumePSInput vout;
+    float3 worldPos = vin.Pos * gPointLightPositionRange.w + gPointLightPositionRange.xyz;
+    vout.PosH = mul(float4(worldPos, 1.0f), gViewProj);
+    return vout;
+}
+
+float4 PointLightVolumePS(PointLightVolumePSInput pin) : SV_Target
+{
+    float2 uv = pin.PosH.xy * gScreenSize.zw;
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+        discard;
+
+    float4 albedoSample = gAlbedoBuffer.Sample(gSampler, uv);
+    float3 normal = normalize(gNormalBuffer.Sample(gSampler, uv).xyz);
+    float depth = gDepthBuffer.Sample(gSampler, uv).r;
+
+    if (depth >= 0.99999f)
+        discard;
+
+    float3 worldPos = ReconstructWorldPosition(uv, depth);
+    float3 viewDir = normalize(gCameraPosition.xyz - worldPos);
+    if (length(gPointLightPositionRange.xyz - worldPos) > gPointLightPositionRange.w)
+        discard;
+
+    float3 color = ComputeSinglePointLight(normal, viewDir, albedoSample.rgb, worldPos);
     return float4(color, 1.0f);
 }
 

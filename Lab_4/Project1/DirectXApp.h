@@ -13,6 +13,8 @@
 #include "UploadBuffer.h"
 #include "ObjectConstants.h"
 #include <memory>
+#include <cstddef>
+#include <cstdint>
 #include "MathHelper.h"
 #include <DirectXMath.h>
 #include "Material.h"
@@ -64,8 +66,40 @@ private:
     float mYaw = 0.0f;
     float mPitch = 0.0f;
     XMFLOAT2 mUvOffset = { 0.0f, 0.0f };
-    XMFLOAT2 mUvDirection = { 1.0f, 0.0f };
+    XMFLOAT2 mUvDirection = { 0.0f, 0.0f };
     float mUvSpeed = 0.2f;
+
+    struct ShotLightProjectile
+    {
+        XMFLOAT3 Position = { 0.0f, 0.0f, 0.0f };
+        XMFLOAT3 Direction = { 0.0f, 0.0f, 1.0f };
+        XMFLOAT3 HitPosition = { 0.0f, 0.0f, 0.0f };
+        XMFLOAT3 HitNormal = { 0.0f, 1.0f, 0.0f };
+        float Age = 0.0f;
+        float TravelDistance = 0.0f;
+        float HitDistance = 0.0f;
+        bool HasHit = false;
+    };
+
+    struct RaycastHit
+    {
+        XMFLOAT3 Position = { 0.0f, 0.0f, 0.0f };
+        XMFLOAT3 Normal = { 0.0f, 1.0f, 0.0f };
+        float Distance = 0.0f;
+    };
+
+    static constexpr size_t MaxShotLights = 256;
+    float mShotLightRadius = 6.0f;
+    XMFLOAT3 mShotLightColor = { 1.0f, 0.72f, 0.35f };
+    float mShotLightIntensity = 5.5f;
+    float mProjectileSpeed = 55.0f;
+    float mProjectileLifeTime = 4.0f;
+    float mSurfaceLightOffset = 0.08f;
+    bool mShootKeyDown = false;
+    std::vector<ShotLightProjectile> mShotProjectiles;
+    std::vector<DynamicPointLight> mPlacedLights;
+    std::vector<Vertex> mSceneVertices;
+    std::vector<uint32_t> mSceneIndices;
 
     std::vector<Submesh> mSubmeshes;
     std::vector<Material> mMaterials;
@@ -191,6 +225,11 @@ private:
         const DirectX::XMFLOAT3& color,
         Microsoft::WRL::ComPtr<ID3D12Resource>& texture);
     void UpdateUvDirectionFromInput();
+    XMFLOAT3 GetCameraForward() const;
+    void ShootLightProjectile();
+    void UpdateShotLights(float dt);
+    void AddPlacedLight(const XMFLOAT3& position);
+    bool RaycastScene(const XMFLOAT3& origin, const XMFLOAT3& direction, float maxDistance, RaycastHit& outHit) const;
 
     // Методы для доступа к ресурсам
     ID3D12Resource* CurrentBackBuffer() const;

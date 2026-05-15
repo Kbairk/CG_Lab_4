@@ -8,6 +8,9 @@
 #include "Parser.h"
 #include "ThrowIfFailed.h"
 #include "TgaLoader.h"
+#include <algorithm>
+#include <limits>
+#include <sstream>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -329,7 +332,7 @@ void DirectXApp::BuildPSO()
     // 3. Корневая сигнатура
     psoDesc.pRootSignature = mRootSignature.Get();
 
-    // 4. Растеризатор (используем CD3DX12_RASTERIZER_DESC как на слайде)
+    // 4. Растеризатор 
     D3D12_RASTERIZER_DESC rasterDesc = {};
     rasterDesc.FillMode = D3D12_FILL_MODE_SOLID;
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
@@ -338,7 +341,7 @@ void DirectXApp::BuildPSO()
 
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 
-    // 5. Blend State (как на слайде)
+    // 5. Blend State 
     D3D12_BLEND_DESC blendDesc = {};
     blendDesc.AlphaToCoverageEnable = FALSE;
     blendDesc.IndependentBlendEnable = FALSE;
@@ -357,7 +360,7 @@ void DirectXApp::BuildPSO()
 
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 
-    // 6. Depth/Stencil State (как на слайде)
+    // 6. Depth/Stencil State 
     psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
 
     // 7. Sample Mask
@@ -466,6 +469,8 @@ void DirectXApp::BuildObj(const std::string& path)
     }
 
     mIndexCount = static_cast<UINT>(indices.size());
+    mSceneVertices = vertices;
+    mSceneIndices = indices;
 
     UINT vbByteSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
     UINT ibByteSize = static_cast<UINT>(indices.size() * sizeof(uint32_t));
@@ -994,12 +999,21 @@ void DirectXApp::OnKeyDown(WPARAM wParam)
     if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN) {
         UpdateUvDirectionFromInput();
     }
+
+    if (wParam == 'F' && !mShootKeyDown) {
+        mShootKeyDown = true;
+        ShootLightProjectile();
+    }
 }
 
 void DirectXApp::OnKeyUp(WPARAM wParam)
 {
     if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN) {
         UpdateUvDirectionFromInput();
+    }
+
+    if (wParam == 'F') {
+        mShootKeyDown = false;
     }
 }
 
@@ -1038,17 +1052,179 @@ void DirectXApp::CalculateFrameStats() {
             windowText += L" - Wireframe Mode";
         }
         else {
-            windowText += L" - Solid Mode";
+        windowText += L" - Solid Mode";
         }
         windowText += L" FPS: " + std::to_wstring(fps);
         windowText += L" MSPF: " + std::to_wstring(mspf);
-        windowText += L" (Press SPACE to switch modes)";
+        windowText += L" Projectiles: " + std::to_wstring(mShotProjectiles.size());
+        windowText += L" Placed lights: " + std::to_wstring(mPlacedLights.size());
+        windowText += L"/" + std::to_wstring(MaxShotLights);
+        windowText += L" (SPACE wireframe, F shoot light)";
 
         SetWindowText(window.GetHandle(), windowText.c_str());
 
         mFrameCount = 0;
         mTimeElapsed += 1.0f;
     }
+}
+
+XMFLOAT3 DirectXApp::GetCameraForward() const
+{
+    XMFLOAT3 forward =
+    {
+        cosf(mPitch) * cosf(mYaw),
+        sinf(mPitch),
+        cosf(mPitch) * sinf(mYaw)
+    };
+
+    XMVECTOR forwardVec = XMVector3Normalize(XMLoadFloat3(&forward));
+    XMStoreFloat3(&forward, forwardVec);
+    return forward;
+}
+
+void DirectXApp::ShootLightProjectile()
+{
+    XMFLOAT3 forward = GetCameraForward();
+    const float maxDistance = mProjectileSpeed * mProjectileLifeTime;
+
+    ShotLightProjectile projectile;
+    projectile.Position = mEyePos;
+    projectile.Direction = forward;
+
+    RaycastHit hit;
+    if (RaycastScene(mEyePos, forward, maxDistance, hit))
+    {
+        projectile.HasHit = true;
+        projectile.HitPosition = hit.Position;
+        projectile.HitNormal = hit.Normal;
+        projectile.HitDistance = hit.Distance;
+    }
+
+    // Projectile is logical while flying; it becomes a real deferred point light on geometry impact.
+    mShotProjectiles.push_back(projectile);
+
+    std::ostringstream stream;
+    stream << "Shot light projectile. Projectiles=" << mShotProjectiles.size()
+        << " Hit=" << (projectile.HasHit ? "yes" : "no") << "\n";
+    OutputDebugStringA(stream.str().c_str());
+}
+
+void DirectXApp::UpdateShotLights(float dt)
+{
+    std::vector<ShotLightProjectile> activeProjectiles;
+    activeProjectiles.reserve(mShotProjectiles.size());
+
+    for (ShotLightProjectile projectile : mShotProjectiles)
+    {
+        projectile.Age += dt;
+        const float step = mProjectileSpeed * dt;
+        projectile.TravelDistance += step;
+
+        XMVECTOR pos = XMLoadFloat3(&projectile.Position);
+        XMVECTOR dir = XMLoadFloat3(&projectile.Direction);
+        pos += dir * step;
+        XMStoreFloat3(&projectile.Position, pos);
+
+        if (projectile.HasHit && projectile.TravelDistance >= projectile.HitDistance)
+        {
+            XMVECTOR hitPos = XMLoadFloat3(&projectile.HitPosition);
+            XMVECTOR hitNormal = XMLoadFloat3(&projectile.HitNormal);
+            XMFLOAT3 placedPosition;
+            XMStoreFloat3(&placedPosition, hitPos + hitNormal * mSurfaceLightOffset);
+            AddPlacedLight(placedPosition);
+            continue;
+        }
+
+        if (projectile.Age < mProjectileLifeTime)
+            activeProjectiles.push_back(projectile);
+    }
+
+    mShotProjectiles.swap(activeProjectiles);
+
+    for (DynamicPointLight& light : mPlacedLights)
+        light.Age += dt;
+}
+
+void DirectXApp::AddPlacedLight(const XMFLOAT3& position)
+{
+    if (mPlacedLights.size() >= MaxShotLights)
+        mPlacedLights.erase(mPlacedLights.begin());
+
+    DynamicPointLight placedLight;
+    placedLight.Light.Position = position;
+    placedLight.Light.Range = mShotLightRadius;
+    placedLight.Light.Color = mShotLightColor;
+    placedLight.Light.Intensity = mShotLightIntensity;
+    mPlacedLights.push_back(placedLight);
+
+    std::ostringstream stream;
+    stream << "Placed point light. Count=" << mPlacedLights.size()
+        << "/" << MaxShotLights << "\n";
+    OutputDebugStringA(stream.str().c_str());
+}
+
+bool DirectXApp::RaycastScene(
+    const XMFLOAT3& origin,
+    const XMFLOAT3& direction,
+    float maxDistance,
+    RaycastHit& outHit) const
+{
+    if (mSceneVertices.empty() || mSceneIndices.size() < 3)
+        return false;
+
+    const float epsilon = 1e-5f;
+    float closestDistance = maxDistance;
+    bool foundHit = false;
+
+    XMVECTOR rayOrigin = XMLoadFloat3(&origin);
+    XMVECTOR rayDirection = XMVector3Normalize(XMLoadFloat3(&direction));
+
+    for (size_t i = 0; i + 2 < mSceneIndices.size(); i += 3)
+    {
+        const Vertex& vertex0 = mSceneVertices[mSceneIndices[i + 0]];
+        const Vertex& vertex1 = mSceneVertices[mSceneIndices[i + 1]];
+        const Vertex& vertex2 = mSceneVertices[mSceneIndices[i + 2]];
+
+        XMVECTOR v0 = XMLoadFloat3(&vertex0.position);
+        XMVECTOR v1 = XMLoadFloat3(&vertex1.position);
+        XMVECTOR v2 = XMLoadFloat3(&vertex2.position);
+        XMVECTOR edge1 = v1 - v0;
+        XMVECTOR edge2 = v2 - v0;
+        XMVECTOR pvec = XMVector3Cross(rayDirection, edge2);
+
+        float det = XMVectorGetX(XMVector3Dot(edge1, pvec));
+        if (fabsf(det) < epsilon)
+            continue;
+
+        float invDet = 1.0f / det;
+        XMVECTOR tvec = rayOrigin - v0;
+        float u = XMVectorGetX(XMVector3Dot(tvec, pvec)) * invDet;
+        if (u < 0.0f || u > 1.0f)
+            continue;
+
+        XMVECTOR qvec = XMVector3Cross(tvec, edge1);
+        float v = XMVectorGetX(XMVector3Dot(rayDirection, qvec)) * invDet;
+        if (v < 0.0f || u + v > 1.0f)
+            continue;
+
+        float distance = XMVectorGetX(XMVector3Dot(edge2, qvec)) * invDet;
+        if (distance <= epsilon || distance >= closestDistance)
+            continue;
+
+        closestDistance = distance;
+        foundHit = true;
+
+        XMVECTOR hitPosition = rayOrigin + rayDirection * distance;
+        XMVECTOR normal = XMVector3Normalize(XMVector3Cross(edge1, edge2));
+        if (XMVectorGetX(XMVector3Dot(normal, rayDirection)) > 0.0f)
+            normal = -normal;
+
+        XMStoreFloat3(&outHit.Position, hitPosition);
+        XMStoreFloat3(&outHit.Normal, normal);
+        outHit.Distance = distance;
+    }
+
+    return foundHit;
 }
 
 void DirectXApp::Update(const Timer& gt)
@@ -1113,6 +1289,7 @@ void DirectXApp::Update(const Timer& gt)
 
     mUvOffset.x += mUvDirection.x * mUvSpeed * dt;
     mUvOffset.y += mUvDirection.y * mUvSpeed * dt;
+    UpdateShotLights(dt);
 
     // ===== WVP =====
     XMMATRIX world = XMMatrixIdentity();
@@ -1169,6 +1346,7 @@ void DirectXApp::Draw(const Timer& gt)
     scene.Proj = mProj;
     scene.EyePos = mEyePos;
     scene.UvOffset = mUvOffset;
+    scene.DynamicPointLights = &mPlacedLights;
     scene.Wireframe = mWireframeMode;
 
     mRenderingSystem->Render(
