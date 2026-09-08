@@ -1,4 +1,6 @@
 Texture2D gDiffuseMap : register(t0);
+Texture2D gNormalMap : register(t1);
+Texture2D gDisplacementMap : register(t2);
 Texture2D gAlbedoBuffer : register(t0);
 Texture2D gNormalBuffer : register(t1);
 Texture2D gDepthBuffer : register(t2);
@@ -11,7 +13,9 @@ cbuffer cbPerObject : register(b0)
     float4x4 mWorldViewProj;
     float2 uvTiling;
     float2 uvOffset;
-    float4 padding;
+    float4 eyePosAndDisplacementScale;
+    float4 tessellationParams; // maxTF, minTF, nearDistance, farDistance
+    float4 normalParams; // normalStrength, mapWidth, mapHeight, debugViewMode
 };
 
 struct DirectionalLightGpu
@@ -55,13 +59,18 @@ struct VSInput
     float3 Pos : POSITION;
     float3 Normal : NORMAL;
     float2 Tex : TEXCOORD;
+    float3 Tangent : TANGENT;
+    float3 Bitangent : BINORMAL;
 };
 
 struct GeometryPSInput
 {
     float4 PosH : SV_POSITION;
     float3 NormalW : NORMAL;
+    float3 TangentW : TANGENT;
+    float3 BitangentW : BINORMAL;
     float2 TexC : TEXCOORD;
+    float TessFactor : TEXCOORD1;
 };
 
 struct GeometryPSOutput
@@ -89,10 +98,120 @@ struct PointLightVolumePSInput
 GeometryPSInput GeometryVS(VSInput vin)
 {
     GeometryPSInput vout;
-    vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
+    vout.PosH = float4(vin.Pos, 1.0f);
+    vout.TessFactor = 1.0f;
     vout.NormalW = normalize(vin.Normal);
+    vout.TangentW = normalize(vin.Tangent);
+    vout.BitangentW = normalize(vin.Bitangent);
     vout.TexC = vin.Tex;
     return vout;
+}
+
+GeometryPSInput GeometryNoTessVS(VSInput vin)
+{
+    GeometryPSInput vout;
+    vout.PosH = mul(float4(vin.Pos, 1.0f), mWorldViewProj);
+    vout.NormalW = normalize(vin.Normal);
+    vout.TangentW = normalize(vin.Tangent);
+    vout.BitangentW = normalize(vin.Bitangent);
+    vout.TexC = vin.Tex;
+    vout.TessFactor = 1.0f;
+    return vout;
+}
+
+struct HSConstantData
+{
+    float Edges[3] : SV_TessFactor;
+    float Inside : SV_InsideTessFactor;
+};
+
+[domain("tri")]
+[partitioning("fractional_odd")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("GeometryPatchConstants")]
+[maxtessfactor(8.0)]
+GeometryPSInput GeometryHS(InputPatch<GeometryPSInput, 3> patch, uint controlPointId : SV_OutputControlPointID)
+{
+    return patch[controlPointId];
+}
+
+float TessFactorForPoint(float3 pointW)
+{
+    float distanceToCamera = distance(pointW, eyePosAndDisplacementScale.xyz);
+    float range = max(0.001f, tessellationParams.w - tessellationParams.z);
+    float t = saturate((distanceToCamera - tessellationParams.z) / range);
+    return lerp(tessellationParams.x, tessellationParams.y, t);
+}
+
+HSConstantData GeometryPatchConstants(InputPatch<GeometryPSInput, 3> patch, uint patchId : SV_PrimitiveID)
+{
+    HSConstantData output;
+
+    float3 center = (patch[0].PosH.xyz + patch[1].PosH.xyz + patch[2].PosH.xyz) / 3.0f;
+    float3 patchNormal = normalize(patch[0].NormalW + patch[1].NormalW + patch[2].NormalW);
+    float3 toEye = normalize(eyePosAndDisplacementScale.xyz - center);
+
+    // A zero tessellation factor rejects a patch before the expensive domain shader.
+    if (dot(patchNormal, toEye) < -0.25f)
+    {
+        output.Edges[0] = 0.0f;
+        output.Edges[1] = 0.0f;
+        output.Edges[2] = 0.0f;
+        output.Inside = 0.0f;
+        return output;
+    }
+
+    // Shared edge midpoints produce the same factor in both neighboring patches.
+    output.Edges[0] = TessFactorForPoint(0.5f * (patch[1].PosH.xyz + patch[2].PosH.xyz));
+    output.Edges[1] = TessFactorForPoint(0.5f * (patch[2].PosH.xyz + patch[0].PosH.xyz));
+    output.Edges[2] = TessFactorForPoint(0.5f * (patch[0].PosH.xyz + patch[1].PosH.xyz));
+    output.Inside = (output.Edges[0] + output.Edges[1] + output.Edges[2]) / 3.0f;
+    return output;
+}
+
+[domain("tri")]
+GeometryPSInput GeometryDS(
+    HSConstantData input,
+    float3 barycentric : SV_DomainLocation,
+    const OutputPatch<GeometryPSInput, 3> patch)
+{
+    GeometryPSInput output;
+
+    float3 posW =
+        patch[0].PosH.xyz * barycentric.x +
+        patch[1].PosH.xyz * barycentric.y +
+        patch[2].PosH.xyz * barycentric.z;
+    float2 uv =
+        patch[0].TexC * barycentric.x +
+        patch[1].TexC * barycentric.y +
+        patch[2].TexC * barycentric.z;
+    float3 normalW = normalize(
+        patch[0].NormalW * barycentric.x +
+        patch[1].NormalW * barycentric.y +
+        patch[2].NormalW * barycentric.z);
+    float3 tangentW = normalize(
+        patch[0].TangentW * barycentric.x +
+        patch[1].TangentW * barycentric.y +
+        patch[2].TangentW * barycentric.z);
+    float3 bitangentW = normalize(
+        patch[0].BitangentW * barycentric.x +
+        patch[1].BitangentW * barycentric.y +
+        patch[2].BitangentW * barycentric.z);
+
+    float2 materialUv = uv * uvTiling + uvOffset;
+    float height = gDisplacementMap.SampleLevel(gSampler, materialUv, 0).r;
+    float displacement = (height - 0.5f) * 2.0f;
+    displacement *= eyePosAndDisplacementScale.w;
+    posW += normalW * displacement;
+
+    output.PosH = mul(float4(posW, 1.0f), mWorldViewProj);
+    output.NormalW = normalW;
+    output.TangentW = tangentW;
+    output.BitangentW = bitangentW;
+    output.TexC = uv;
+    output.TessFactor = input.Inside;
+    return output;
 }
 
 GeometryPSOutput GeometryPS(GeometryPSInput pin)
@@ -102,8 +221,33 @@ GeometryPSOutput GeometryPS(GeometryPSInput pin)
     float4 albedo = gDiffuseMap.Sample(gSampler, uv);
     clip(albedo.a - 0.1f);
 
+    float3 tangentNormal = gNormalMap.Sample(gSampler, uv).rgb * 2.0f - 1.0f;
+    tangentNormal.xy *= normalParams.x;
+    tangentNormal = normalize(tangentNormal);
+
+    // Gram-Schmidt keeps the tangent basis orthogonal after interpolation.
+    float3 N = normalize(pin.NormalW);
+    float3 T = normalize(pin.TangentW - dot(pin.TangentW, N) * N);
+    float handedness = dot(cross(N, T), pin.BitangentW) < 0.0f ? -1.0f : 1.0f;
+    float3 B = normalize(cross(N, T)) * handedness;
+    float3x3 tbnMat = float3x3(T, B, N);
+    float3 normalW = normalize(mul(tangentNormal, tbnMat));
+
+    if (normalParams.w >= 1.5f && normalParams.w < 2.5f)
+    {
+        albedo = float4(normalW * 0.5f + 0.5f, 1.0f);
+    }
+    else if (normalParams.w >= 2.5f)
+    {
+        float tessLevel = saturate((pin.TessFactor - tessellationParams.y) /
+            max(0.001f, tessellationParams.x - tessellationParams.y));
+        albedo = float4(
+            lerp(float3(0.1f, 0.2f, 1.0f), float3(1.0f, 0.1f, 0.05f), tessLevel),
+            1.0f);
+    }
+
     output.Albedo = albedo;
-    output.Normal = float4(normalize(pin.NormalW), 1.0f);
+    output.Normal = float4(normalW, 1.0f);
     return output;
 }
 
@@ -233,7 +377,7 @@ float4 LightingPS(FullscreenPSInput pin) : SV_Target
     float3 viewDir = normalize(gCameraPosition.xyz - worldPos);
     float3 albedo = albedoSample.rgb;
 
-    float3 color = albedo * 0.05f;
+    float3 color = albedo * float3(0.18f, 0.19f, 0.20f);
     color += ComputeDirectionalLight(normal, viewDir, albedo, worldPos);
     color += ComputeSpotLights(normal, viewDir, albedo, worldPos);
 
@@ -277,5 +421,12 @@ FullscreenPSInput FinalVS(uint vertexId : SV_VertexID)
 
 float4 FinalPS(FullscreenPSInput pin) : SV_Target
 {
-    return gLightingBuffer.Sample(gSampler, pin.TexC);
+    float3 hdrColor = gLightingBuffer.Sample(gSampler, pin.TexC).rgb;
+    hdrColor *= 1.08f;
+
+    // Reinhard tone mapping keeps additive deferred lighting from clipping to pure white.
+    float3 mapped = hdrColor / (hdrColor + 1.0f);
+    mapped = pow(saturate(mapped), 1.0f / 2.2f);
+
+    return float4(mapped, 1.0f);
 }

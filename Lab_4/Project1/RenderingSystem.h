@@ -60,6 +60,7 @@ struct SceneRenderContext
     DirectX::XMFLOAT2 UvOffset = { 0.0f, 0.0f };
     const std::vector<DynamicPointLight>* DynamicPointLights = nullptr;
     bool Wireframe = false;
+    UINT DebugViewMode = 1;
 };
 
 class GBuffer
@@ -186,11 +187,16 @@ private:
 
     ComPtr<ID3D12PipelineState> mGeometryPso;
     ComPtr<ID3D12PipelineState> mGeometryWireframePso;
+    ComPtr<ID3D12PipelineState> mGeometryNoTessPso;
+    ComPtr<ID3D12PipelineState> mGeometryNoTessWireframePso;
     ComPtr<ID3D12PipelineState> mLightingPso;
     ComPtr<ID3D12PipelineState> mPointLightPso;
     ComPtr<ID3D12PipelineState> mFinalPso;
 
     ComPtr<ID3DBlob> mGeometryVs;
+    ComPtr<ID3DBlob> mGeometryNoTessVs;
+    ComPtr<ID3DBlob> mGeometryHs;
+    ComPtr<ID3DBlob> mGeometryDs;
     ComPtr<ID3DBlob> mGeometryPs;
     ComPtr<ID3DBlob> mLightingVs;
     ComPtr<ID3DBlob> mLightingPs;

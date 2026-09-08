@@ -4,11 +4,37 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <windows.h>
 
 using namespace DirectX;
 
 namespace
 {
+    std::filesystem::path GetExeDirectory()
+    {
+        char path[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        return std::filesystem::path(path).parent_path();
+    }
+
+    void StartupLog(const std::string& message)
+    {
+        OutputDebugStringA((message + "\n").c_str());
+
+        std::ofstream log(GetExeDirectory() / "Project1_startup.log", std::ios::app);
+        if (log)
+            log << message << '\n';
+    }
+
+    void StartupLogHr(const std::string& message, HRESULT hr)
+    {
+        char buffer[128] = {};
+        sprintf_s(buffer, " HRESULT=0x%08X", static_cast<unsigned int>(hr));
+        StartupLog(message + buffer);
+    }
+
     D3D12_RESOURCE_BARRIER TransitionBarrier(
         ID3D12Resource* resource,
         D3D12_RESOURCE_STATES before,
@@ -213,14 +239,30 @@ bool RenderingSystem::Initialize(
     mWidth = width;
     mHeight = height;
 
+    StartupLog("RenderingSystem BuildLights begin");
     BuildLights();
+    StartupLog("RenderingSystem BuildLights ok");
+    StartupLog("RenderingSystem GBuffer Initialize begin");
     mGBuffer.Initialize(device, width, height, rtvDescriptorSize);
+    StartupLog("RenderingSystem GBuffer Initialize ok");
+    StartupLog("RenderingSystem BuildPointLightVolumeMesh begin");
     BuildPointLightVolumeMesh();
+    StartupLog("RenderingSystem BuildPointLightVolumeMesh ok");
+    StartupLog("RenderingSystem BuildShaders begin");
     BuildShaders();
+    StartupLog("RenderingSystem BuildShaders ok");
+    StartupLog("RenderingSystem BuildRootSignatures begin");
     BuildRootSignatures();
+    StartupLog("RenderingSystem BuildRootSignatures ok");
+    StartupLog("RenderingSystem BuildPsos begin");
     BuildPsos(backBufferFormat);
+    StartupLog("RenderingSystem BuildPsos ok");
+    StartupLog("RenderingSystem BuildDeferredDescriptorHeap begin");
     BuildDeferredDescriptorHeap();
+    StartupLog("RenderingSystem BuildDeferredDescriptorHeap ok");
+    StartupLog("RenderingSystem BuildFrameConstants begin");
     BuildFrameConstants();
+    StartupLog("RenderingSystem BuildFrameConstants ok");
 
     return true;
 }
@@ -241,16 +283,28 @@ void RenderingSystem::Render(
     ID3D12DescriptorHeap* materialHeaps[] = { scene.MaterialHeap };
     commandList->SetDescriptorHeaps(1, materialHeaps);
     commandList->SetGraphicsRootDescriptorTable(0, scene.MaterialHeap->GetGPUDescriptorHandleForHeapStart());
-    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->IASetVertexBuffers(0, 1, &scene.VertexBufferView);
     commandList->IASetIndexBuffer(&scene.IndexBufferView);
-    commandList->SetPipelineState(scene.Wireframe ? mGeometryWireframePso.Get() : mGeometryPso.Get());
 
     for (auto& submesh : *scene.Submeshes)
     {
         Material* material = FindMaterial(scene, submesh.MaterialName);
         if (!material)
             continue;
+
+        const bool hasDisplacement = !material->DisplacementMap.empty() &&
+            material->DisplacementTexture.Get() != nullptr &&
+            material->DisplacementScale > 0.0f;
+        if (hasDisplacement)
+        {
+            commandList->SetPipelineState(scene.Wireframe ? mGeometryWireframePso.Get() : mGeometryPso.Get());
+            commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+        }
+        else
+        {
+            commandList->SetPipelineState(scene.Wireframe ? mGeometryNoTessWireframePso.Get() : mGeometryNoTessPso.Get());
+            commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        }
 
         ObjectConstants objectConstants;
         XMMATRIX view = XMLoadFloat4x4(&scene.View);
@@ -259,7 +313,16 @@ void RenderingSystem::Render(
 
         XMStoreFloat4x4(&objectConstants.mWorldViewProj, XMMatrixTranspose(wvp));
         objectConstants.uvTiling = material->Tiling;
-        objectConstants.uvOffset = scene.UvOffset;
+        objectConstants.uvOffset =
+        {
+            scene.UvOffset.x + material->StaticUvOffset.x,
+            scene.UvOffset.y + material->StaticUvOffset.y
+        };
+        objectConstants.eyePosAndDisplacementScale =
+            XMFLOAT4(scene.EyePos.x, scene.EyePos.y, scene.EyePos.z, material->DisplacementScale);
+        objectConstants.tessellationParams = material->TessellationParams;
+        objectConstants.normalParams =
+            XMFLOAT4(material->NormalStrength, 2048.0f, 2048.0f, static_cast<float>(scene.DebugViewMode));
 
         scene.ObjectConstantsBuffer->CopyData(0, objectConstants);
 
@@ -338,18 +401,21 @@ void RenderingSystem::Render(
 void RenderingSystem::BuildLights()
 {
     mDirectionalLights = { {} };
+    mDirectionalLights[0].Direction = { -0.35f, -0.85f, 0.35f };
+    mDirectionalLights[0].Intensity = 1.05f;
+    mDirectionalLights[0].Color = { 1.0f, 0.90f, 0.72f };
 
     mPointLights =
     {
-        { { -3.0f, 2.5f, -2.0f }, 8.0f, { 1.0f, 0.7f, 0.4f }, 5.0f },
-        { {  2.0f, 2.0f,  1.0f }, 7.0f, { 0.4f, 0.7f, 1.0f }, 4.0f },
-        { {  0.0f, 3.0f,  4.0f }, 9.0f, { 0.8f, 1.0f, 0.6f }, 3.5f }
+        { { -3.2f, 2.4f, -3.6f }, 7.5f, { 1.0f, 0.62f, 0.34f }, 0.55f },
+        { {  3.0f, 3.2f,  2.8f }, 8.0f, { 0.45f, 0.62f, 1.0f }, 0.35f },
+        { {  0.5f, 4.6f, -0.5f }, 7.0f, { 0.85f, 1.0f, 0.72f }, 0.25f }
     };
 
     mSpotLights =
     {
-        { { -1.5f, 4.0f, -6.0f }, 14.0f, { 0.2f, -1.0f, 0.5f }, 0.75f, { 1.0f, 0.9f, 0.7f }, 7.0f },
-        { {  2.5f, 4.5f,  5.0f }, 12.0f, { -0.2f, -1.0f, -0.4f }, 0.8f, { 0.6f, 0.8f, 1.0f }, 6.0f }
+        { { -2.5f, 5.2f, -5.5f }, 13.0f, { 0.25f, -1.0f, 0.45f }, 0.72f, { 1.0f, 0.86f, 0.62f }, 0.75f },
+        { {  3.8f, 4.2f,  3.8f }, 11.0f, { -0.45f, -0.8f, -0.35f }, 0.80f, { 0.55f, 0.72f, 1.0f }, 0.42f }
     };
 }
 
@@ -361,7 +427,7 @@ void RenderingSystem::BuildRootSignatures()
     geometryRanges[0].BaseShaderRegister = 0;
     geometryRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     geometryRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    geometryRanges[1].NumDescriptors = 1;
+    geometryRanges[1].NumDescriptors = 3;
     geometryRanges[1].BaseShaderRegister = 0;
     geometryRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
@@ -373,7 +439,8 @@ void RenderingSystem::BuildRootSignatures()
     geometryParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     geometryParams[1].DescriptorTable.NumDescriptorRanges = 1;
     geometryParams[1].DescriptorTable.pDescriptorRanges = &geometryRanges[1];
-    geometryParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // Displacement is sampled in the domain shader, normal/albedo in the pixel shader.
+    geometryParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -381,7 +448,7 @@ void RenderingSystem::BuildRootSignatures()
     sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler.ShaderRegister = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC geometryDesc = {};
     geometryDesc.NumParameters = 2;
@@ -492,21 +559,25 @@ void RenderingSystem::BuildPsos(DXGI_FORMAT backBufferFormat)
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BINORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC geometryPso = {};
     geometryPso.InputLayout = { inputLayout, _countof(inputLayout) };
     geometryPso.pRootSignature = mGeometryRootSignature.Get();
     geometryPso.VS = { reinterpret_cast<BYTE*>(mGeometryVs->GetBufferPointer()), mGeometryVs->GetBufferSize() };
+    geometryPso.HS = { reinterpret_cast<BYTE*>(mGeometryHs->GetBufferPointer()), mGeometryHs->GetBufferSize() };
+    geometryPso.DS = { reinterpret_cast<BYTE*>(mGeometryDs->GetBufferPointer()), mGeometryDs->GetBufferSize() };
     geometryPso.PS = { reinterpret_cast<BYTE*>(mGeometryPs->GetBufferPointer()), mGeometryPs->GetBufferSize() };
     geometryPso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    geometryPso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    geometryPso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     geometryPso.RasterizerState.DepthClipEnable = TRUE;
     geometryPso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     geometryPso.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     geometryPso.SampleMask = UINT_MAX;
-    geometryPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    geometryPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
     geometryPso.NumRenderTargets = 2;
     geometryPso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     geometryPso.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -515,11 +586,46 @@ void RenderingSystem::BuildPsos(DXGI_FORMAT backBufferFormat)
     geometryPso.DepthStencilState.DepthEnable = TRUE;
     geometryPso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     geometryPso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&geometryPso, IID_PPV_ARGS(&mGeometryPso)));
+    HRESULT hr = mDevice->CreateGraphicsPipelineState(&geometryPso, IID_PPV_ARGS(&mGeometryPso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create geometry PSO failed", hr);
+        ThrowIfFailed(hr, "Create geometry PSO failed");
+    }
+    StartupLog("Create geometry PSO ok");
 
     geometryPso.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
     geometryPso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&geometryPso, IID_PPV_ARGS(&mGeometryWireframePso)));
+    hr = mDevice->CreateGraphicsPipelineState(&geometryPso, IID_PPV_ARGS(&mGeometryWireframePso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create geometry wireframe PSO failed", hr);
+        ThrowIfFailed(hr, "Create geometry wireframe PSO failed");
+    }
+    StartupLog("Create geometry wireframe PSO ok");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC geometryNoTessPso = geometryPso;
+    geometryNoTessPso.VS = { reinterpret_cast<BYTE*>(mGeometryNoTessVs->GetBufferPointer()), mGeometryNoTessVs->GetBufferSize() };
+    geometryNoTessPso.HS = {};
+    geometryNoTessPso.DS = {};
+    geometryNoTessPso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    geometryNoTessPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    hr = mDevice->CreateGraphicsPipelineState(&geometryNoTessPso, IID_PPV_ARGS(&mGeometryNoTessPso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create geometry non-tessellated PSO failed", hr);
+        ThrowIfFailed(hr, "Create geometry non-tessellated PSO failed");
+    }
+    StartupLog("Create geometry non-tessellated PSO ok");
+
+    geometryNoTessPso.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
+    hr = mDevice->CreateGraphicsPipelineState(&geometryNoTessPso, IID_PPV_ARGS(&mGeometryNoTessWireframePso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create geometry non-tessellated wireframe PSO failed", hr);
+        ThrowIfFailed(hr, "Create geometry non-tessellated wireframe PSO failed");
+    }
+    StartupLog("Create geometry non-tessellated wireframe PSO ok");
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC lightingPso = {};
     lightingPso.pRootSignature = mLightingRootSignature.Get();
@@ -535,7 +641,13 @@ void RenderingSystem::BuildPsos(DXGI_FORMAT backBufferFormat)
     lightingPso.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     lightingPso.SampleDesc.Count = 1;
     lightingPso.DepthStencilState.DepthEnable = FALSE;
-    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&lightingPso, IID_PPV_ARGS(&mLightingPso)));
+    hr = mDevice->CreateGraphicsPipelineState(&lightingPso, IID_PPV_ARGS(&mLightingPso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create lighting PSO failed", hr);
+        ThrowIfFailed(hr, "Create lighting PSO failed");
+    }
+    StartupLog("Create lighting PSO ok");
 
     D3D12_INPUT_ELEMENT_DESC pointLightInputLayout[] =
     {
@@ -557,14 +669,26 @@ void RenderingSystem::BuildPsos(DXGI_FORMAT backBufferFormat)
     pointLightPso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
     pointLightPso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     // This is additive light accumulation, not alpha transparency blending.
-    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&pointLightPso, IID_PPV_ARGS(&mPointLightPso)));
+    hr = mDevice->CreateGraphicsPipelineState(&pointLightPso, IID_PPV_ARGS(&mPointLightPso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create point light PSO failed", hr);
+        ThrowIfFailed(hr, "Create point light PSO failed");
+    }
+    StartupLog("Create point light PSO ok");
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC finalPso = lightingPso;
     finalPso.pRootSignature = mFinalRootSignature.Get();
     finalPso.VS = { reinterpret_cast<BYTE*>(mFinalVs->GetBufferPointer()), mFinalVs->GetBufferSize() };
     finalPso.PS = { reinterpret_cast<BYTE*>(mFinalPs->GetBufferPointer()), mFinalPs->GetBufferSize() };
     finalPso.RTVFormats[0] = backBufferFormat;
-    ThrowIfFailed(mDevice->CreateGraphicsPipelineState(&finalPso, IID_PPV_ARGS(&mFinalPso)));
+    hr = mDevice->CreateGraphicsPipelineState(&finalPso, IID_PPV_ARGS(&mFinalPso));
+    if (FAILED(hr))
+    {
+        StartupLogHr("Create final PSO failed", hr);
+        ThrowIfFailed(hr, "Create final PSO failed");
+    }
+    StartupLog("Create final PSO ok");
 }
 
 void RenderingSystem::BuildDeferredDescriptorHeap()
@@ -619,6 +743,9 @@ void RenderingSystem::BuildShaders()
 {
     const std::wstring shaderFile = L"../Project1/shaders.hlsl";
     mGeometryVs = d3dUtil::CompileShader(shaderFile, nullptr, "GeometryVS", "vs_5_0");
+    mGeometryNoTessVs = d3dUtil::CompileShader(shaderFile, nullptr, "GeometryNoTessVS", "vs_5_0");
+    mGeometryHs = d3dUtil::CompileShader(shaderFile, nullptr, "GeometryHS", "hs_5_0");
+    mGeometryDs = d3dUtil::CompileShader(shaderFile, nullptr, "GeometryDS", "ds_5_0");
     mGeometryPs = d3dUtil::CompileShader(shaderFile, nullptr, "GeometryPS", "ps_5_0");
     mLightingVs = d3dUtil::CompileShader(shaderFile, nullptr, "LightingVS", "vs_5_0");
     mLightingPs = d3dUtil::CompileShader(shaderFile, nullptr, "LightingPS", "ps_5_0");
